@@ -93,7 +93,7 @@ export function Rankings() {
   return (
     <PublicLayout showMainContainer={false}>
       <div className='relative'>
-        <div className='relative mx-auto w-full max-w-[1280px] space-y-8 px-4 pt-12 pb-12 sm:px-6 sm:pt-16 sm:pb-16 xl:px-8'>
+        <div className='relative mx-auto w-full max-w-[1280px] space-y-8 px-4 pt-24 pb-12 sm:px-6 sm:pt-28 sm:pb-16 xl:px-8'>
           <RankingsHero period={period} onPeriodChange={handlePeriodChange} />
           {content}
         </div>

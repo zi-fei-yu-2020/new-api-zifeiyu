@@ -76,14 +76,16 @@ export function Home() {
             causing inconsistent behavior. This token only permits user-activated
             top-level navigation and does NOT grant same-origin access.
           */}
-          <iframe
-            ref={iframeRef}
-            src={content}
-            className='h-screen w-full border-none'
-            title={t('Custom Home Page')}
-            sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-top-navigation-by-user-activation'
-            onLoad={syncIframePreferences}
-          />
+          <main className='pt-16'>
+            <iframe
+              ref={iframeRef}
+              src={content}
+              className='h-[calc(100dvh-4rem)] min-h-80 w-full border-none'
+              title={t('Custom Home Page')}
+              sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-top-navigation-by-user-activation'
+              onLoad={syncIframePreferences}
+            />
+          </main>
         </PublicLayout>
       )
     }
@@ -93,12 +95,14 @@ export function Home() {
     if (contentIsHtml) {
       return (
         <PublicLayout showMainContainer={false}>
-          <RichContent
-            mode='html'
-            htmlVariant='isolated'
-            content={content}
-            className='custom-home-content'
-          />
+          <main className='pt-16'>
+            <RichContent
+              mode='html'
+              htmlVariant='isolated'
+              content={content}
+              className='custom-home-content'
+            />
+          </main>
         </PublicLayout>
       )
     }

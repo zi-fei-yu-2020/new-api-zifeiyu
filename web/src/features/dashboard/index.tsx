@@ -338,7 +338,7 @@ export function Dashboard() {
                     <TabsTrigger
                       key={section}
                       value={section}
-                      className='rounded-none px-3.5 py-1 font-mono text-xs font-medium tracking-wide uppercase transition-none hover:bg-neutral-100 hover:text-black data-[state=active]:bg-black data-[state=active]:text-white data-[state=active]:shadow-none'
+                      className='px-3.5 text-xs'
                     >
                       {t(SECTION_META[section].titleKey)}
                     </TabsTrigger>

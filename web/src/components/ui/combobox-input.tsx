@@ -316,7 +316,8 @@ export function ComboboxInput({
                     data-highlighted={index === highlightedIndex}
                     className={cn(
                       'relative flex cursor-pointer items-center gap-2 rounded-none px-2 py-1.5 text-xs font-mono text-black select-none transition-none',
-                      index === highlightedIndex && 'bg-black text-white',
+                      index === highlightedIndex &&
+                        'bg-muted text-foreground ring-1 ring-border',
                       value === option.value && 'font-bold'
                     )}
                     onMouseEnter={() => setHighlightedIndex(index)}

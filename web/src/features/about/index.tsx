@@ -33,13 +33,13 @@ function EmptyAboutState() {
   const currentYear = new Date().getFullYear()
 
   return (
-    <div className='flex min-h-[60vh] items-center justify-center p-8'>
-      <div className='border-border bg-card w-full max-w-3xl border p-8 text-start sm:p-12'>
+    <div className='flex items-center justify-center'>
+      <div className='w-full text-start'>
         <div className='border-border border-b pb-8'>
           <div className='border-border bg-muted flex size-12 items-center justify-center border'>
             <Construction className='text-muted-foreground size-6' />
           </div>
-          <h2 className='mt-6 font-serif text-3xl leading-none font-semibold tracking-tighter sm:text-4xl'>
+          <h2 className='mt-6 text-xl leading-tight font-semibold tracking-tight sm:text-2xl'>
             {t('No About Content Set')}
           </h2>
           <p className='text-muted-foreground mt-4 max-w-xl text-sm leading-relaxed'>
@@ -127,61 +127,40 @@ export function About() {
   const isUrl = hasContent && isHttpUrl(rawContent)
   const contentIsHtml = hasContent && isLikelyHtml(rawContent)
 
-  if (isLoading) {
-    return (
-      <PublicLayout>
-        <div className='border-border bg-card mx-auto flex max-w-3xl flex-col gap-0 border p-8 sm:p-12'>
-          <Skeleton className='h-8 w-[45%]' />
-          <Skeleton className='h-4 w-full' />
-          <Skeleton className='h-4 w-[90%]' />
-          <Skeleton className='h-4 w-[80%]' />
-        </div>
-      </PublicLayout>
-    )
-  }
-
-  if (!hasContent) {
-    return (
-      <PublicLayout>
-        <EmptyAboutState />
-      </PublicLayout>
-    )
-  }
-
-  if (isUrl) {
-    return (
-      <PublicLayout showMainContainer={false}>
-        <iframe
-          src={rawContent}
-          className='h-[calc(100vh-3.5rem)] w-full border-0'
-          title={t('About')}
-          sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
-        />
-      </PublicLayout>
-    )
-  }
-
-  if (contentIsHtml) {
-    return (
-      <PublicLayout showMainContainer={false}>
-        <RichContent
-          mode='html'
-          htmlVariant='isolated'
-          content={rawContent}
-          className='prose-neutral max-w-none'
-        />
-      </PublicLayout>
-    )
-  }
-
   return (
     <PublicLayout>
-      <div className='border-border bg-card mx-auto max-w-3xl border p-8 sm:p-12'>
-        <RichContent
-          mode='markdown'
-          content={rawContent}
-          className='prose-neutral max-w-none'
-        />
+      <div className='mx-auto max-w-4xl min-w-0 space-y-6'>
+        <header className='border-border border-b pb-5'>
+          <h1 className='text-2xl font-semibold tracking-tight sm:text-3xl'>
+            {t('About')}
+          </h1>
+        </header>
+        <section className='border-border bg-card text-card-foreground min-w-0 overflow-hidden rounded-lg border p-5 sm:p-8'>
+          {isLoading ? (
+            <div className='space-y-4'>
+              <Skeleton className='h-8 w-[45%]' />
+              <Skeleton className='h-4 w-full' />
+              <Skeleton className='h-4 w-[90%]' />
+              <Skeleton className='h-4 w-[80%]' />
+            </div>
+          ) : !hasContent ? (
+            <EmptyAboutState />
+          ) : isUrl ? (
+            <iframe
+              src={rawContent}
+              className='h-[calc(100dvh-14rem)] min-h-80 w-full border-0'
+              title={t('About')}
+              sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
+            />
+          ) : (
+            <RichContent
+              mode={contentIsHtml ? 'html' : 'markdown'}
+              htmlVariant='article'
+              content={rawContent}
+              className='prose-neutral max-w-none'
+            />
+          )}
+        </section>
       </div>
     </PublicLayout>
   )

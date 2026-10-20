@@ -1,11 +1,15 @@
 package model
 
 import (
+	"context"
 	"math"
+	"net"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -72,6 +76,38 @@ func resetBatchUpdateTestState(t *testing.T) {
 			batchUpdateLocks[i].Unlock()
 		}
 	})
+}
+
+func TestQuotaAdjustmentCacheRollsBackIfAnyDeltaOverflows(t *testing.T) {
+	address := os.Getenv("TEST_QUOTA_REDIS_ADDR")
+	if address == "" {
+		t.Skip("TEST_QUOTA_REDIS_ADDR is required for real Redis integer overflow checks")
+	}
+	host, _, err := net.SplitHostPort(address)
+	require.NoError(t, err)
+	require.True(t, net.ParseIP(host).IsLoopback())
+	client := redis.NewClient(&redis.Options{Addr: address, MaxRetries: -1})
+	ctx := context.Background()
+	const userID = 999987654
+	key := getUserCacheKey(userID)
+	exists, err := client.Exists(ctx, key).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+	originalClient := common.RDB
+	common.RDB = client
+	t.Cleanup(func() {
+		require.NoError(t, client.Del(ctx, key).Err())
+		common.RDB = originalClient
+		_ = client.Close()
+	})
+	require.NoError(t, client.HSet(ctx, key, "Id", userID, "CacheSchema", userCacheSchemaVersion, "Quota", 10).Err())
+	_, err = cacheApplyUserQuotaDelta(userID, 20, math.MaxInt64)
+	require.Error(t, err)
+	require.Equal(t, "10", client.HGet(ctx, key, "Quota").Val())
+	require.NoError(t, client.HSet(ctx, key, "Quota", math.MinInt64).Err())
+	_, err = cacheApplyUserQuotaDelta(userID, math.MaxInt64, 2)
+	require.NoError(t, err)
+	require.Equal(t, "1", client.HGet(ctx, key, "Quota").Val())
 }
 
 func TestTryReserveQuotaWithoutRedis(t *testing.T) {

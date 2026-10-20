@@ -175,6 +175,7 @@ const paymentSchema = z.object({
   WaffoMinTopUp: z.coerce.number().min(1),
   WaffoNotifyUrl: z.string(),
   WaffoReturnUrl: z.string(),
+  WaffoPancakeEnabled: z.boolean(),
   WaffoPancakeMerchantID: z.string(),
   WaffoPancakePrivateKey: z.string(),
   WaffoPancakeReturnURL: z.string(),
@@ -454,6 +455,7 @@ export function PaymentSettingsSection({
       WaffoSandboxApiKey: values.WaffoSandboxApiKey.trim(),
       WaffoSandboxPrivateKey: values.WaffoSandboxPrivateKey.trim(),
       WaffoPayMethods: JSON.stringify(waffoPayMethods),
+      WaffoPancakeEnabled: values.WaffoPancakeEnabled,
       WaffoPancakeMerchantID: values.WaffoPancakeMerchantID.trim(),
       WaffoPancakePrivateKey: values.WaffoPancakePrivateKey.trim(),
       WaffoPancakeReturnURL: removeTrailingSlash(
@@ -501,6 +503,7 @@ export function PaymentSettingsSection({
       WaffoPayMethods: JSON.stringify(
         parseWaffoPayMethods(waffoDefaultValues.WaffoPayMethods)
       ),
+      WaffoPancakeEnabled: initialRef.current.WaffoPancakeEnabled,
       WaffoPancakeMerchantID: initialRef.current.WaffoPancakeMerchantID.trim(),
       WaffoPancakePrivateKey: initialRef.current.WaffoPancakePrivateKey.trim(),
       WaffoPancakeReturnURL: removeTrailingSlash(
@@ -635,6 +638,13 @@ export function PaymentSettingsSection({
       updates.push({ key: 'WaffoEnabled', value: sanitized.WaffoEnabled })
     }
 
+    if (sanitized.WaffoPancakeEnabled !== initial.WaffoPancakeEnabled) {
+      updates.push({
+        key: 'WaffoPancakeEnabled',
+        value: sanitized.WaffoPancakeEnabled,
+      })
+    }
+
     if (sanitized.WaffoSandbox !== initial.WaffoSandbox) {
       updates.push({ key: 'WaffoSandbox', value: sanitized.WaffoSandbox })
     }
@@ -716,6 +726,13 @@ export function PaymentSettingsSection({
     }
 
     for (const update of updates) {
+      if (
+        hasWaffoPancakeChanges &&
+        update.key === 'WaffoPancakeEnabled' &&
+        update.value === true
+      ) {
+        continue
+      }
       await updateOption.mutateAsync(update)
     }
 
@@ -754,6 +771,12 @@ export function PaymentSettingsSection({
         }
         setWaffoPancakeSavedBinding(savedBinding)
         setWaffoPancakeSelection(savedBinding)
+        if (sanitized.WaffoPancakeEnabled && !initial.WaffoPancakeEnabled) {
+          await updateOption.mutateAsync({
+            key: 'WaffoPancakeEnabled',
+            value: true,
+          })
+        }
         queryClient.invalidateQueries({ queryKey: ['system-options'] })
         toast.success(t('Waffo Pancake settings saved'))
         return
@@ -796,6 +819,7 @@ export function PaymentSettingsSection({
     WaffoPayMethods: JSON.stringify(waffoPayMethods),
   }
   const waffoPancakeValues: WaffoPancakeSettingsValues = {
+    WaffoPancakeEnabled: currentFormValues.WaffoPancakeEnabled,
     WaffoPancakeMerchantID: currentFormValues.WaffoPancakeMerchantID,
     WaffoPancakePrivateKey: currentFormValues.WaffoPancakePrivateKey,
     WaffoPancakeReturnURL: currentFormValues.WaffoPancakeReturnURL,

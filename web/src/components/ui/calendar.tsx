@@ -220,7 +220,7 @@ function CalendarDayButton({
       data-range-end={modifiers.range_end}
       data-range-middle={modifiers.range_middle}
       className={cn(
-        'relative isolate z-10 flex aspect-square size-auto w-full min-w-(--cell-size) flex-col gap-1 border-0 leading-none font-normal rounded-none transition-none cursor-pointer data-[selected-single=true]:bg-black data-[selected-single=true]:text-white data-[range-start=true]:bg-black data-[range-start=true]:text-white data-[range-end=true]:bg-black data-[range-end=true]:text-white data-[range-middle=true]:bg-neutral-100 data-[range-middle=true]:text-black hover:bg-neutral-100 hover:text-black [&>span]:text-xs [&>span]:opacity-70',
+        'relative isolate z-10 flex aspect-square size-auto w-full min-w-(--cell-size) flex-col gap-1 border-0 leading-none font-normal rounded-none transition-none cursor-pointer data-[selected-single=true]:bg-primary data-[selected-single=true]:text-primary-foreground data-[selected-single=true]:hover:bg-primary data-[selected-single=true]:hover:text-primary-foreground data-[range-start=true]:bg-primary data-[range-start=true]:text-primary-foreground data-[range-start=true]:hover:bg-primary data-[range-start=true]:hover:text-primary-foreground data-[range-end=true]:bg-primary data-[range-end=true]:text-primary-foreground data-[range-end=true]:hover:bg-primary data-[range-end=true]:hover:text-primary-foreground data-[range-middle=true]:bg-neutral-100 data-[range-middle=true]:text-black hover:bg-neutral-100 hover:text-black [&>span]:text-xs [&>span]:opacity-70',
         defaultClassNames.day,
         className
       )}

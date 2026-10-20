@@ -30,12 +30,19 @@ redis.call('HINCRBY', KEYS[1], 'Quota', -tonumber(ARGV[1]))
 return 1`
 
 const userQuotaDeltaScript = `
-if tonumber(redis.call('HGET', KEYS[1], 'Id') or '0') ~= tonumber(ARGV[2])
-  or tonumber(redis.call('HGET', KEYS[1], 'CacheSchema') or '0') ~= tonumber(ARGV[3])
+if tonumber(redis.call('HGET', KEYS[1], 'Id') or '0') ~= tonumber(ARGV[1])
+  or tonumber(redis.call('HGET', KEYS[1], 'CacheSchema') or '0') ~= tonumber(ARGV[2])
   or redis.call('HEXISTS', KEYS[1], 'Quota') == 0 then
   return -1
 end
-redis.call('HINCRBY', KEYS[1], 'Quota', ARGV[1])
+local original = redis.call('HGET', KEYS[1], 'Quota')
+for index = 3, #ARGV do
+  local result = redis.pcall('HINCRBY', KEYS[1], 'Quota', ARGV[index])
+  if type(result) == 'table' and result.err then
+    redis.call('HSET', KEYS[1], 'Quota', original)
+    return redis.error_reply(result.err)
+  end
+end
 return 1`
 
 const tokenQuotaReserveScript = `
@@ -84,9 +91,13 @@ func cacheTryReserveUserQuota(userID int, amount int64) (cacheQuotaResult, error
 	return quotaResultFromLua(result, err)
 }
 
-func cacheApplyUserQuotaDelta(userID int, delta int64) (cacheQuotaResult, error) {
+func cacheApplyUserQuotaDelta(userID int, deltas ...int64) (cacheQuotaResult, error) {
+	args := []any{userID, userCacheSchemaVersion}
+	for _, delta := range deltas {
+		args = append(args, delta)
+	}
 	result, err := common.RDB.Eval(context.Background(), userQuotaDeltaScript,
-		[]string{getUserCacheKey(userID)}, delta, userID, userCacheSchemaVersion).Int()
+		[]string{getUserCacheKey(userID)}, args...).Int()
 	return quotaResultFromLua(result, err)
 }
 

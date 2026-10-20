@@ -579,7 +579,7 @@ export function FlowCharts(props: FlowChartsProps) {
                     <TabsTrigger
                       key={option.value}
                       value={option.value}
-                      className='gap-1.5 rounded-none px-2.5 font-mono text-xs font-medium transition-none hover:bg-neutral-100 hover:text-black data-[state=active]:bg-black data-[state=active]:text-white data-[state=active]:shadow-none'
+                      className='gap-1.5 px-2.5 text-xs'
                     >
                       <Icon data-icon='inline-start' aria-hidden='true' />
                       {t(option.labelKey)}
@@ -607,7 +607,7 @@ export function FlowCharts(props: FlowChartsProps) {
                   <TabsTrigger
                     key={limit}
                     value={String(limit)}
-                    className='rounded-none px-2.5 font-mono text-xs font-medium transition-none hover:bg-neutral-100 hover:text-black data-[state=active]:bg-black data-[state=active]:text-white data-[state=active]:shadow-none'
+                    className='px-2.5 text-xs'
                   >
                     {t('Top {{count}}', { count: limit })}
                   </TabsTrigger>
@@ -635,7 +635,7 @@ export function FlowCharts(props: FlowChartsProps) {
                   <TabsTrigger
                     key={option.value}
                     value={option.value}
-                    className='rounded-none px-2.5 font-mono text-xs font-medium transition-none hover:bg-neutral-100 hover:text-black data-[state=active]:bg-black data-[state=active]:text-white data-[state=active]:shadow-none'
+                    className='px-2.5 text-xs'
                   >
                     {t(option.labelKey)}
                   </TabsTrigger>

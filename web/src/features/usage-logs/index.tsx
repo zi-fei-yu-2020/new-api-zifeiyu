@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { Image, ListChecks } from 'lucide-react'
 import { useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -142,9 +143,14 @@ function UsageLogsContent() {
           <div className='flex h-full min-h-0 flex-col gap-4'>
             {showTaskSwitcher && (
               <Tabs value={activeCategory} onValueChange={handleSectionChange}>
-                <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
+                <TabsList className='w-full sm:w-fit'>
                   {visibleSections.map((section) => (
                     <TabsTrigger key={section} value={section}>
+                      {section === 'drawing' ? (
+                        <Image aria-hidden />
+                      ) : (
+                        <ListChecks aria-hidden />
+                      )}
                       {t(SECTION_META[section].titleKey)}
                     </TabsTrigger>
                   ))}

@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"math"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/shopspring/decimal"
@@ -42,7 +43,7 @@ func AdjustUserQuota(userID, operatorRole int, mode string, value int) (*UserQuo
 		if operatorRole != common.RoleRootUser && operatorRole <= user.Role {
 			return ErrUserQuotaPermission
 		}
-		if user.Quota > common.MaxWalletQuota || user.Quota < -common.MaxWalletQuota {
+		if mode != "override" && (user.Quota > common.MaxWalletQuota || user.Quota < -common.MaxWalletQuota) {
 			return ErrWalletQuotaLimitExceeded
 		}
 		quota := decimal.NewFromInt(int64(value))
@@ -74,11 +75,19 @@ func AdjustUserQuota(userID, operatorRole int, mode string, value int) (*UserQuo
 		return nil, err
 	}
 
-	// Apply only the committed difference, preserving outstanding reservations.
-	// Both balances are bounded above, so their difference fits in int64.
-	delta := int64(adjustment.After) - int64(adjustment.Before)
-	if delta != 0 {
-		if err := cacheIncrUserQuota(userID, delta); err != nil {
+	difference := decimal.NewFromInt(int64(adjustment.After)).Sub(decimal.NewFromInt(int64(adjustment.Before)))
+	if common.RedisEnabled && !difference.IsZero() {
+		deltas := []int64{}
+		if difference.BigInt().IsInt64() {
+			deltas = append(deltas, difference.IntPart())
+		} else {
+			first := int64(math.MaxInt64)
+			if difference.IsNegative() {
+				first = -first
+			}
+			deltas = append(deltas, first, difference.Sub(decimal.NewFromInt(first)).IntPart())
+		}
+		if _, err := cacheApplyUserQuotaDelta(userID, deltas...); err != nil {
 			common.SysError(common.LogText("failed to sync manual quota adjustment for user %d: %s", userID, err))
 		}
 	}

@@ -56,6 +56,15 @@ func GetTopUpInfo(c *gin.Context) {
 
 	// Waffo Pancake is displayed above the standard Waffo gateway.
 	enableWaffoPancake := isWaffoPancakeTopUpEnabled()
+	if !enableWaffoPancake {
+		visibleMethods := make([]map[string]string, 0, len(payMethods))
+		for _, method := range payMethods {
+			if method["type"] != model.PaymentMethodWaffoPancake {
+				visibleMethods = append(visibleMethods, method)
+			}
+		}
+		payMethods = visibleMethods
+	}
 	if enableWaffoPancake {
 		hasWaffoPancake := false
 		for _, method := range payMethods {

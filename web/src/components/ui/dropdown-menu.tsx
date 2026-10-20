@@ -122,7 +122,7 @@ function DropdownMenuItem({
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        "group/dropdown-menu-item focus:bg-black focus:text-white not-data-[variant=destructive]:focus:**:text-white data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive data-[variant=destructive]:focus:text-destructive-foreground data-[variant=destructive]:*:[svg]:text-destructive data-[variant=destructive]:focus:*:[svg]:text-destructive-foreground relative flex cursor-default items-center gap-1.5 rounded-none px-1.5 py-1.5 text-sm font-medium outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "group/dropdown-menu-item focus:bg-muted focus:text-foreground not-data-[variant=destructive]:focus:**:text-foreground data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive data-[variant=destructive]:focus:text-destructive-foreground data-[variant=destructive]:*:[svg]:text-destructive data-[variant=destructive]:focus:*:[svg]:text-destructive-foreground relative flex cursor-default items-center gap-1.5 rounded-none px-1.5 py-1.5 text-sm font-medium outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       onClick={onClick || onSelect ? handleClick : undefined}
@@ -148,7 +148,7 @@ function DropdownMenuSubTrigger({
       data-slot='dropdown-menu-sub-trigger'
       data-inset={inset}
       className={cn(
-        "focus:bg-black focus:text-white not-data-[variant=destructive]:focus:**:text-white data-popup-open:bg-black data-popup-open:text-white data-open:bg-black data-open:text-white flex cursor-default items-center gap-1.5 rounded-none px-1.5 py-1.5 text-sm font-medium outline-hidden select-none data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "focus:bg-muted focus:text-foreground not-data-[variant=destructive]:focus:**:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground data-open:bg-muted data-open:text-foreground flex cursor-default items-center gap-1.5 rounded-none px-1.5 py-1.5 text-sm font-medium outline-hidden select-none data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       {...props}
@@ -197,7 +197,7 @@ function DropdownMenuCheckboxItem({
       data-slot='dropdown-menu-checkbox-item'
       data-inset={inset}
       className={cn(
-        "focus:bg-black focus:text-white focus:**:text-white relative flex cursor-default items-center gap-1.5 rounded-none py-1.5 pr-8 pl-1.5 text-sm font-medium outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "focus:bg-muted focus:text-foreground focus:**:text-foreground relative flex cursor-default items-center gap-1.5 rounded-none py-1.5 pr-8 pl-1.5 text-sm font-medium outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       checked={checked}
@@ -238,7 +238,7 @@ function DropdownMenuRadioItem({
       data-slot='dropdown-menu-radio-item'
       data-inset={inset}
       className={cn(
-        "focus:bg-black focus:text-white focus:**:text-white relative flex cursor-default items-center gap-1.5 rounded-none py-1.5 pr-8 pl-1.5 text-sm font-medium outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "focus:bg-muted focus:text-foreground focus:**:text-foreground relative flex cursor-default items-center gap-1.5 rounded-none py-1.5 pr-8 pl-1.5 text-sm font-medium outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 data-inset:pl-7 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       {...props}

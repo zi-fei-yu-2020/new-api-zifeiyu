@@ -150,7 +150,7 @@ export function Pricing() {
   if (isLoading) {
     return (
       <PublicLayout showMainContainer={false}>
-        <div className='mx-auto w-full max-w-[1800px] px-3 pt-16 pb-8 sm:px-6 sm:pt-20 sm:pb-10 xl:px-8'>
+        <div className='mx-auto w-full max-w-[1800px] px-3 pt-24 pb-8 sm:px-6 sm:pt-28 sm:pb-10 xl:px-8'>
           <LoadingSkeleton viewMode={viewMode} />
         </div>
       </PublicLayout>
@@ -160,7 +160,7 @@ export function Pricing() {
   return (
     <PublicLayout showMainContainer={false}>
       <div className='relative'>
-        <div className='relative mx-auto w-full max-w-[1800px] px-4 pt-12 pb-12 sm:px-6 sm:pt-16 sm:pb-16 xl:px-8'>
+        <div className='relative mx-auto w-full max-w-[1800px] px-4 pt-24 pb-12 sm:px-6 sm:pt-28 sm:pb-16 xl:px-8'>
           <header className='border-border mx-auto mb-8 max-w-3xl border-b pb-8 text-start sm:mb-12 sm:pb-12'>
             <h1 className='font-serif text-[clamp(2.5rem,7vw,5rem)] leading-[0.95] font-semibold tracking-tighter'>
               {t('Model Square')}

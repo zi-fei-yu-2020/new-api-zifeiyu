@@ -444,6 +444,50 @@ test.each([
   }
 )
 
+test('transferring touch capture from the handle to the region keeps dragging active', async () => {
+  await mount('table')
+  pointerGeometry()
+  const scope = screen.getByRole('region', { name: 'Channels' })
+  const handle = screen.getByRole('button', { name: 'Reorder channel 3' })
+  fireEvent.pointerDown(handle, {
+    pointerId: 1,
+    button: 0,
+    pointerType: 'touch',
+    clientX: 20,
+    clientY: 250,
+  })
+  fireEvent.lostPointerCapture(handle, { pointerId: 1 })
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 20, clientY: 190 })
+  await screen.findByText('Release to join priority 80')
+  fireEvent.pointerUp(scope, { pointerId: 1, clientX: 20, clientY: 190 })
+  await screen.findByRole('button', { name: 'Undo' })
+  expect(requests.filter((request) => !request.preview)).toEqual([
+    { id: 3, target_id: 2, position: 'same', revision: 'initial' },
+  ])
+})
+
+test('card content can start a drag without using the handle', async () => {
+  await mount()
+  pointerGeometry()
+  const scope = screen.getByRole('region', { name: 'Channels' })
+  const card = screen
+    .getByRole('button', { name: 'Reorder channel 3' })
+    .closest('.channel-card')!
+  fireEvent.pointerDown(card, {
+    pointerId: 1,
+    button: 0,
+    clientX: 660,
+    clientY: 130,
+  })
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 470, clientY: 150 })
+  await screen.findByText('Release to join priority 80')
+  fireEvent.pointerUp(scope, { pointerId: 1, clientX: 470, clientY: 150 })
+  await screen.findByRole('button', { name: 'Undo' })
+  expect(requests.filter((request) => !request.preview)).toEqual([
+    { id: 3, target_id: 2, position: 'same', revision: 'initial' },
+  ])
+})
+
 test('the compact table preview respects masked channel names', async () => {
   await mount('table')
   await userEvent.setup().click(screen.getByRole('button', { name: /^Hide$/ }))

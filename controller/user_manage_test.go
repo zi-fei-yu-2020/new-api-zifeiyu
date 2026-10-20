@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -416,6 +417,9 @@ func TestManageUserQuotaTargetsAndWalletBounds(t *testing.T) {
 		{name: "oversized_add", mode: "add", value: common.MaxWalletQuota + 1, targetID: 1, reason: "quota_limit_exceeded"},
 		{name: "oversized_subtract", mode: "subtract", value: common.MaxWalletQuota + 1, targetID: 1, reason: "quota_limit_exceeded"},
 		{name: "oversized_override", mode: "override", value: -common.MaxWalletQuota - 1, targetID: 1, reason: "quota_limit_exceeded"},
+		{name: "legacy_balance_add_rejected", mode: "add", before: common.MaxWalletQuota + 1, value: 1, targetID: 1, reason: "quota_limit_exceeded"},
+		{name: "legacy_balance_subtract_rejected", mode: "subtract", before: common.MaxWalletQuota + 1, value: 1, targetID: 1, reason: "quota_limit_exceeded"},
+		{name: "legacy_balance_invalid_override_rejected", mode: "override", before: 500004855755245148, value: common.MaxWalletQuota + 1, targetID: 1, reason: "quota_limit_exceeded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := setupManageUserTestDB(t)
@@ -582,6 +586,10 @@ func TestManageUserQuotaCacheUsesCommittedIntegerDifference(t *testing.T) {
 		{name: "add_preserves_reservations", mode: "add", before: 1000, cached: 900, value: 500, after: 1500, wantCached: 1400},
 		{name: "subtract_preserves_reservations", mode: "subtract", before: 1000, cached: 900, value: 500, after: 500, wantCached: 400},
 		{name: "override_preserves_reservations", mode: "override", before: 1000, cached: 900, value: 2000, after: 2000, wantCached: 1900},
+		{name: "legacy_override_preserves_reservations", mode: "override", before: 500004855755245148, cached: 500004855755245048, value: 500000000000, after: 500000000000, wantCached: 499999999900},
+		{name: "legacy_negative_override", mode: "override", before: -common.MaxWalletQuota - 1, cached: -common.MaxWalletQuota - 101, value: 1000, after: 1000, wantCached: 900},
+		{name: "legacy_max_int64_difference", mode: "override", before: math.MaxInt64, cached: math.MaxInt64, value: -1, after: -1, wantCached: -1},
+		{name: "legacy_min_int64_difference", mode: "override", before: math.MinInt64, cached: math.MinInt64, value: 1, after: 1, wantCached: 1},
 		{name: "large_odd_difference", mode: "override", before: common.MaxWalletQuota - 1, cached: common.MaxWalletQuota - 1, value: -common.MaxWalletQuota, after: -common.MaxWalletQuota, wantCached: -common.MaxWalletQuota},
 		{name: "rollback_does_not_change_cache", mode: "subtract", before: 1000, cached: 900, value: 500, after: 1000, wantCached: 900, failUpdate: true},
 		{name: "cache_error_keeps_committed_change", mode: "add", before: 1000, value: 500, after: 1500, failCache: true},

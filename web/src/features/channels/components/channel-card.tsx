@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { flexRender, type Row } from '@tanstack/react-table'
-import { memo } from 'react'
+import { memo, useContext } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { GroupBadge } from '@/components/group-badge'
@@ -25,6 +25,7 @@ import { StatusBadgeTypeContext } from '@/components/status-badge'
 
 import { isTagAggregateRow, parseGroupsList } from '../lib'
 import type { Channel } from '../types'
+import { ChannelPriorityContext } from './channel-priority-context'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
 import { useChannels } from './channels-provider'
 
@@ -49,6 +50,7 @@ function ChannelCardComponent({
 }) {
   const { t } = useTranslation()
   const { sensitiveVisible } = useChannels()
+  const priorityControls = useContext(ChannelPriorityContext)
   const isTagRow = isTagAggregateRow(row.original)
   const cells = row.getAllCells()
 
@@ -80,7 +82,20 @@ function ChannelCardComponent({
     <ChannelRowActionsLayoutContext.Provider value='card'>
       <div
         data-state={isSelected ? 'selected' : undefined}
-        className='channel-card flex min-w-0 flex-col gap-3'
+        className={`channel-card flex min-w-0 flex-col gap-3 ${reorderEnabled ? 'cursor-grab select-none active:cursor-grabbing' : ''}`}
+        onPointerDown={(event) => {
+          if (!reorderEnabled || !priorityControls || priorityControls.reason)
+            return
+          const target = event.target
+          if (
+            target instanceof Element &&
+            target.closest(
+              'button, a, input, textarea, select, [role="button"], [role="checkbox"], [role="switch"], [contenteditable="true"]'
+            )
+          )
+            return
+          priorityControls.start(event, row.original.id)
+        }}
       >
         {/* Row 1: selection + type, with status badge + actions menu */}
         <div className='flex items-center justify-between gap-2'>

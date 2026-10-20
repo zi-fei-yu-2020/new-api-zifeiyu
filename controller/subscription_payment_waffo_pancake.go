@@ -24,6 +24,10 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 	if !requirePaymentCompliance(c) {
 		return
 	}
+	if !setting.WaffoPancakeEnabled {
+		common.ApiErrorT(c, "Waffo Pancake payments are disabled or not configured")
+		return
+	}
 
 	var req SubscriptionWaffoPancakePayRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {

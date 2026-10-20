@@ -622,61 +622,61 @@ export function useChannelPriorityDrag(options: DragOptions) {
     [preview]
   )
 
-  const start = useCallback(
-    (event: PointerEvent<HTMLButtonElement>, id: number) => {
-      if (
-        !latest.current.enabled ||
-        point.current ||
-        released.current ||
-        event.button !== 0
-      ) {
-        return
-      }
-      const source = root.current?.querySelector<HTMLElement>(
-        `[data-sortable-id="channel:${id}"]`
-      )
-      if (!source || !root.current) return
-      event.preventDefault()
-      event.currentTarget.focus({ preventScroll: true })
-      point.current = {
-        pointerId: event.pointerId,
-        id,
-        startX: event.clientX,
-        startY: event.clientY,
-        x: event.clientX,
-        y: event.clientY,
-        moved: false,
-        clone: null,
-        overlay: null,
-        feedback: null,
-        insertion: null,
-        insertionY: null,
-        drop: null,
-        source,
-        opacity: source.style.opacity,
-        outline: source.style.outline,
-        scroller: scrollParent(source),
-        scrollBounds: new DOMRect(),
-        rootBounds: new DOMRect(),
-        target: '',
-        slots: [],
-        slotsByID: new Map(),
-        items: latest.current.items,
-        ordered: latest.current.items,
-        hitIndex: -1,
-        hitTarget: null,
-        horizontal: false,
-        table: false,
-        destination: null,
-        scrollTop: 0,
-        scrollLeft: 0,
-        lastFrame: 0,
-        commit: false,
-      }
-      root.current.setPointerCapture(event.pointerId)
-    },
-    []
-  )
+  const start = useCallback((event: PointerEvent<HTMLElement>, id: number) => {
+    if (
+      !latest.current.enabled ||
+      point.current ||
+      released.current ||
+      event.button !== 0
+    ) {
+      return
+    }
+    const source = root.current?.querySelector<HTMLElement>(
+      `[data-sortable-id="channel:${id}"]`
+    )
+    if (!source || !root.current) return
+    event.preventDefault()
+    const handle = source.querySelector<HTMLButtonElement>(
+      '[data-priority-handle]'
+    )
+    ;(handle ?? event.currentTarget).focus({ preventScroll: true })
+    point.current = {
+      pointerId: event.pointerId,
+      id,
+      startX: event.clientX,
+      startY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+      moved: false,
+      clone: null,
+      overlay: null,
+      feedback: null,
+      insertion: null,
+      insertionY: null,
+      drop: null,
+      source,
+      opacity: source.style.opacity,
+      outline: source.style.outline,
+      scroller: scrollParent(source),
+      scrollBounds: new DOMRect(),
+      rootBounds: new DOMRect(),
+      target: '',
+      slots: [],
+      slotsByID: new Map(),
+      items: latest.current.items,
+      ordered: latest.current.items,
+      hitIndex: -1,
+      hitTarget: null,
+      horizontal: false,
+      table: false,
+      destination: null,
+      scrollTop: 0,
+      scrollLeft: 0,
+      lastFrame: 0,
+      commit: false,
+    }
+    root.current.setPointerCapture(event.pointerId)
+  }, [])
 
   const keyDown = useCallback(
     (event: KeyboardEvent<HTMLButtonElement>, id: number) => {
@@ -786,8 +786,12 @@ export function useChannelPriorityDrag(options: DragOptions) {
       onPointerCancel: () => {
         if (point.current) stop()
       },
-      onLostPointerCapture: () => {
-        if (point.current) stop()
+      onLostPointerCapture: (event: PointerEvent<HTMLDivElement>) => {
+        if (
+          event.target === event.currentTarget &&
+          point.current?.pointerId === event.pointerId
+        )
+          stop()
       },
     },
   }

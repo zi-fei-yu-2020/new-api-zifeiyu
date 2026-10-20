@@ -66,7 +66,8 @@ export function ChannelPriorityHandle(props: { id: number }) {
           type='button'
           variant='ghost'
           size='icon-sm'
-          className='text-muted-foreground cursor-grab touch-none active:cursor-grabbing'
+          className='border-primary/30 bg-primary/5 text-foreground hover:bg-primary/10 size-10 cursor-grab touch-none border border-dashed active:cursor-grabbing sm:size-8'
+          data-priority-handle
           disabled={!!controls.reason}
           aria-label={
             controls.reason === 'tag'

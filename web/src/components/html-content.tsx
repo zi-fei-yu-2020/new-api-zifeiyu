@@ -19,9 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import DOMPurify, { type Config } from 'dompurify'
 import { useEffect, useMemo, useRef } from 'react'
 
+import { Markdown } from '@/components/ui/markdown'
 import { cn } from '@/lib/utils'
 
-export type HtmlContentVariant = 'inline' | 'isolated'
+export type HtmlContentVariant = 'inline' | 'isolated' | 'article'
 
 interface HtmlContentProps {
   content: string
@@ -122,6 +123,21 @@ function sanitizeHtmlContent(
   content: string,
   variant: HtmlContentVariant
 ): string {
+  if (variant === 'article') {
+    return DOMPurify.sanitize(content, {
+      FORBID_TAGS: [
+        'style',
+        'script',
+        'link',
+        'meta',
+        'base',
+        'iframe',
+        'object',
+        'embed',
+      ],
+      FORBID_ATTR: ['style', 'class', 'srcdoc'],
+    })
+  }
   if (variant === 'isolated') {
     const html = DOMPurify.sanitize(content, isolatedSanitizeOptions)
 
@@ -178,6 +194,10 @@ export function HtmlContent(props: HtmlContentProps) {
 
   if (variant === 'isolated') {
     return <IsolatedHtmlContent className={props.className} html={html} />
+  }
+
+  if (variant === 'article') {
+    return <Markdown className={props.className}>{html}</Markdown>
   }
 
   return (
