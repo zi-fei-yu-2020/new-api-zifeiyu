@@ -95,8 +95,8 @@ function unwrap<T>(response: Envelope<T>): T {
   }
   return response.data
 }
-export const getGameStatus = () =>
-  api.get<Envelope<GameStatus>>(path).then((r) => unwrap(r.data))
+export const getGameStatus = (signal?: AbortSignal) =>
+  api.get<Envelope<GameStatus>>(path, { signal }).then((r) => unwrap(r.data))
 export const getGameRewards = () =>
   api
     .get<Envelope<GameRewards>>(`${path}/rewards`, { skipErrorHandler: true })
@@ -112,13 +112,14 @@ export const sendInputs = (
   id: string,
   from: number,
   inputs: number[],
-  quit = false
+  quit = false,
+  signal?: AbortSignal
 ) =>
   api
     .post<Envelope<GameRun>>(
       `${path}/input`,
       { id, from, inputs, quit },
-      { timeout: 10000, skipErrorHandler: true }
+      { timeout: 10000, skipErrorHandler: true, signal }
     )
     .then((r) => unwrap(r.data))
 export const getRankings = (period: 'day' | 'week') =>

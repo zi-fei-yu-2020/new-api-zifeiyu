@@ -95,6 +95,9 @@ func TestGameDatabaseMatrix(t *testing.T) {
 						require.Zero(t, legacyPeriod.Reserved)
 					}
 					testGameUpgradeClock(t, time.Date(2026, 11, 20, 12, 0, 0, 0, gameZone))
+					t.Run("network_recovery", func(t *testing.T) {
+						testGameNetworkRecovery(t, time.Date(2026, 11, 21, 12, 0, 0, 0, gameZone))
+					})
 					// Retiring studio controls must not rewrite or delete legacy option data.
 					require.NoError(t, db.Create(&Option{Key: "studio_setting.image_studio_enabled", Value: "false"}).Error)
 					require.NoError(t, SaveGameSettings(GameSettings{Enabled: true, RewardVersion: 1, RewardsEnabled: true, DailyQuota: 200, DailyBudget: 300, WeeklyBudget: 1000}))

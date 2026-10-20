@@ -61,8 +61,9 @@ export function GameCenter() {
   const queryClient = useQueryClient()
   const status = useQuery({
     queryKey: ['game-status'],
-    queryFn: getGameStatus,
+    queryFn: ({ signal }) => getGameStatus(signal),
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     staleTime: 0,
   })
   const rewards = useQuery({

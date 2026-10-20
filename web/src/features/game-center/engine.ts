@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 export const DURATION = 900
 export const UPGRADE_PAUSE_TICKS = 100
 export const TICK_MS = 100
+export const MAX_INPUT_BATCH = 300
 export type Enemy = {
   id: number
   x: number

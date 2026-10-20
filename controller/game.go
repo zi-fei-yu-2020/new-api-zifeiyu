@@ -48,7 +48,7 @@ func AdvanceGame(c *gin.Context) {
 	var body struct {
 		ID     string `json:"id" binding:"required,max=40"`
 		From   int    `json:"from" binding:"min=0"`
-		Inputs []int  `json:"inputs" binding:"max=50"`
+		Inputs []int  `json:"inputs" binding:"max=300"`
 		Quit   bool   `json:"quit"`
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)

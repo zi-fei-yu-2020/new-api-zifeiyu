@@ -435,10 +435,10 @@ func StartGame(userID int, now time.Time) (*GameView, error) {
 }
 
 // AdvanceGame locks a user's run and accepts a bounded, append-only input batch.
-// Retries/multiple tabs return the committed state. Gaps over five seconds are
-// simulated with neutral inputs; disconnects cannot pause the competition clock.
+// Retries return committed state and apply only unacknowledged input suffixes.
+// Gaps beyond the input window use neutral inputs; disconnects do not pause time.
 func AdvanceGame(userID int, id string, from int, inputs []int, quit bool, now time.Time) (*GameView, error) {
-	if len(inputs) > 50 || from < -1 {
+	if len(inputs) > tokengame.MaxInputBatch || from < -1 {
 		return nil, ErrGameInput
 	}
 	for _, input := range inputs {
@@ -462,20 +462,28 @@ func AdvanceGame(userID int, id string, from int, inputs []int, quit bool, now t
 			return nil
 		}
 		state := &view.State
-		allowed := min(state.ClockLimit(), max(0, int((now.UnixMilli()-run.StartedAt)/tokengame.TickMillis)))
-		if from == -1 || allowed-state.Cursor() > 50 || quit {
+		elapsed := max(int64(0), (now.UnixMilli()-run.StartedAt)/tokengame.TickMillis)
+		allowed := int(min(int64(state.ClockLimit()), elapsed))
+		expired := elapsed >= int64(state.ClockLimit()+tokengame.MaxInputBatch)
+		if from == -1 || allowed-state.Cursor() > tokengame.MaxInputBatch || expired {
 			for state.Cursor() < allowed && !state.Done() {
 				state.Step(0)
 			}
-		} else if from == state.Cursor() {
+		} else if from <= state.Cursor() {
 			if from+len(inputs) > allowed+2 {
 				return ErrGameInput
 			}
-			for _, input := range inputs {
+			acknowledged := min(len(inputs), state.Cursor()-from)
+			for _, input := range inputs[acknowledged:] {
 				state.Step(input)
 			}
 		} else {
 			return nil
+		}
+		if quit {
+			for state.Cursor() < allowed && !state.Done() {
+				state.Step(0)
+			}
 		}
 		if state.Done() || quit {
 			run.Status = "defeated"
@@ -670,6 +678,14 @@ func MaintainGames(now time.Time) error {
 		return err
 	}
 	for _, run := range runs {
+		view, err := gameView(&run, now)
+		if err != nil {
+			return err
+		}
+		deadline := run.StartedAt + int64(view.State.ClockLimit()+tokengame.MaxInputBatch)*tokengame.TickMillis
+		if now.UnixMilli() < deadline {
+			continue
+		}
 		if _, err := AdvanceGame(run.UserID, run.ID, -1, nil, false, now); err != nil {
 			return err
 		}

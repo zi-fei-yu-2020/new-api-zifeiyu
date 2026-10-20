@@ -4,6 +4,7 @@ import "math"
 
 const Duration = 1800
 const TickMillis = 100
+const MaxInputBatch = 300
 const Version = 3
 const SprintDuration = 900
 const UpgradePauseTicks = 100
