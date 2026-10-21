@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import DOMPurify, { type Config } from 'dompurify'
 import { useEffect, useMemo, useRef } from 'react'
 
-import { Markdown } from '@/components/ui/markdown'
+import { richContentClassName } from '@/components/rich-content-styles'
 import { cn } from '@/lib/utils'
 
 export type HtmlContentVariant = 'inline' | 'isolated' | 'article'
@@ -88,7 +88,7 @@ const isolatedSanitizeOptions = {
   FORCE_BODY: true,
 } satisfies Config
 
-function hardenIsolatedHtml(html: string): string {
+function hardenHtmlContent(html: string): string {
   if (typeof document === 'undefined') {
     return html
   }
@@ -124,24 +124,27 @@ function sanitizeHtmlContent(
   variant: HtmlContentVariant
 ): string {
   if (variant === 'article') {
-    return DOMPurify.sanitize(content, {
-      FORBID_TAGS: [
-        'style',
-        'script',
-        'link',
-        'meta',
-        'base',
-        'iframe',
-        'object',
-        'embed',
-      ],
-      FORBID_ATTR: ['style', 'class', 'srcdoc'],
-    })
+    return hardenHtmlContent(
+      DOMPurify.sanitize(content, {
+        ADD_ATTR: ['target'],
+        FORBID_TAGS: [
+          'style',
+          'script',
+          'link',
+          'meta',
+          'base',
+          'iframe',
+          'object',
+          'embed',
+        ],
+        FORBID_ATTR: ['style', 'class', 'srcdoc'],
+      })
+    )
   }
   if (variant === 'isolated') {
     const html = DOMPurify.sanitize(content, isolatedSanitizeOptions)
 
-    return hardenIsolatedHtml(html)
+    return hardenHtmlContent(html)
   }
 
   return DOMPurify.sanitize(content)
@@ -196,13 +199,14 @@ export function HtmlContent(props: HtmlContentProps) {
     return <IsolatedHtmlContent className={props.className} html={html} />
   }
 
-  if (variant === 'article') {
-    return <Markdown className={props.className}>{html}</Markdown>
-  }
-
   return (
     <div
-      className={cn('prose prose-neutral max-w-none', props.className)}
+      className={cn(
+        variant === 'article'
+          ? richContentClassName
+          : 'prose prose-neutral max-w-none',
+        props.className
+      )}
       // eslint-disable-next-line react/no-danger -- html is sanitized above
       dangerouslySetInnerHTML={{ __html: html }}
     />

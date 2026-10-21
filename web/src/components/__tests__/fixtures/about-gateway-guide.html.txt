@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>中转站网关配置指南</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { line-height: 1.8; color: #1a1a1a; background: #f5f7fa; }
+        .container { max-width: 900px; margin: 0 auto; padding: 40px 30px; }
+        h1 { font-size: 28px; text-align: center; margin-bottom: 40px; }
+        .highlight-box { background: #667eea; color: #fff; padding: 20px; }
+        pre { background: #2d2d2d; color: #f8f8f2; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 中转站网关配置指南</h1>
+
+        <!-- 一、背景说明 -->
+        <h2>一、背景说明</h2>
+        <p>"中转站网关"可以把不同 AI 服务统一收口到一个内部访问入口，开发者本地工具只需要配置：</p>
+        <div class="highlight-box">
+            <strong>三要素配置</strong>
+            网关地址：<code>BASE_URL</code>&nbsp;&nbsp;|&nbsp;&nbsp;访问密钥：<code>API_KEY</code>&nbsp;&nbsp;|&nbsp;&nbsp;模型名称：<code>MODEL</code><br>
+            即可通过统一网关调用 Claude、OpenAI、Gemini、DeepSeek、Qwen 等模型。
+        </div>
+        <div class="benefit-list">
+            <ol>
+                <li><strong>统一出口</strong>：不需要每台电脑分别配置多个模型厂商的访问方式。</li>
+                <li><strong>统一审计与额度管理</strong>：方便公司统计使用量、分组授权、限流和成本控制。</li>
+                <li><strong>降低网络问题</strong>：开发工具访问公司网关，由网关负责转发到上游模型服务。</li>
+                <li><strong>便于切换模型</strong>：同一个工具可以通过更换模型名快速切换不同模型。</li>
+            </ol>
+        </div>
+        <h2>二、准备信息</h2>
+        <p>获取以下信息：</p>
+        <div class="config-card">
+            <div class="config-item"><span class="label">请求地址：</span><span class="value">（<code>BASE_URL</code>）填写域名即可</span><span class="required">必填</span></div>
+            <div class="config-item"><span class="label">API Key：</span><span class="value">以 <code>sk-</code> 开头的密钥</span><span class="required">必填</span></div>
+        </div>
+        <p>下载所需工具：</p>
+        <ul class="download-list">
+            <li><strong>cc-switch</strong>：<a href="https://github.com/farion1231/cc-switch/releases" target="_blank">cc-switch 下载</a></li>
+            <li><strong>paseo</strong>：<a href="https://github.com/getpaseo/paseo/releases" target="_blank">paseo 下载</a></li>
+        </ul>
+        <h2>三、配置 cc-switch</h2>
+        <h3>1. 配置 Claude Code 应用渠道</h3>
+        <p>选择 Claude Code 渠道，然后点击右上角的加号，进入添加新供应商页面。</p>
+        <div class="config-card">
+            <h3 style="margin-top:0;">基础信息</h3>
+            <div class="config-item"><span class="label">供应商：</span><span class="value">选择 claude</span></div>
+            <div class="config-item"><span class="label">请求地址：</span><span class="value">https://ai.112102.xyz</span></div>
+        </div>
+        <p>点击<strong>保存</strong>，返回首页，就能看到自己添加的渠道了。点击<strong>测试</strong>，出现"运行正常"，表示配置成功 ✅</p>
+        <h2>四、安装 Node.js（已安装可跳过）</h2>
+        <p>确保 Node.js 版本 ≥ 18.0</p>
+
+        <pre><code># Ubuntu / Debian 用户
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo bash -
+sudo apt-get install -y nodejs
+node --version
+
+# macOS 用户
+sudo xcode-select --install
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install node
+node --version
+
+# Windows 用户
+# 打开 https://nodejs.org/en/download/current
+# 点击下载 Windows Installer (.msi) 安装即可
+node --version</code></pre>
+        <h2>五、安装 Claude Code</h2>
+        <pre><code>npm install -g @anthropic-ai/claude-code
+claude --version</code></pre>
+        <pre><code>国内用户：npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com</code></pre>
+        <h2>六、开始使用</h2>
+        <p>在您的项目目录下或者 cmd 打开运行：</p>
+        <pre><code>claude</code></pre>
+        <p>运行后，信任工作目录 + Enter</p>
+        <div class="success-tip">🎉 开始在终端里和你的 AI 编程搭档一起写代码吧！</div>
+        <div class="footer">中转站网关配置指南 · 内部文档</div>
+    </div>
+</body>
+</html>
