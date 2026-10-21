@@ -173,9 +173,9 @@ it('shows desktop remaining and used amounts side by side without labels, with t
 })
 
 it.each([
-  ['unused', 500000, 0, 100, 'text-emerald-500'],
-  ['low remaining', 150000, 350000, 30, 'text-amber-500'],
-  ['critical remaining', 50000, 450000, 10, 'text-rose-500'],
+  ['unused', 500000, 0, 100, 'text-success'],
+  ['low remaining', 150000, 350000, 30, 'text-warning'],
+  ['critical remaining', 50000, 450000, 10, 'text-destructive'],
   ['exhausted', 0, 500000, 0, null],
   ['overdrawn', -50000, 500000, 0, null],
   ['zero total', 0, 0, 0, null],
@@ -187,6 +187,9 @@ it.each([
     const button = screen.getByRole('button')
     const progress = screen.getByRole('progressbar')
     expect(progress).toHaveAttribute('aria-valuenow', String(percentage))
+    expect(
+      progress.querySelector('[data-slot="progress-indicator"]')
+    ).toHaveStyle({ width: `${percentage}%` })
     if (color) expect(progress).toHaveClass(color)
     if (remaining < 0) {
       expect(
