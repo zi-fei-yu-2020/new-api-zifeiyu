@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,6 +13,132 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+func TestBepusdtDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			dsn := "local"
+			if dialect != "sqlite" {
+				dsn = os.Getenv("TEST_BEPUSDT_" + strings.ToUpper(dialect) + "_DSN")
+				if dsn == "" {
+					t.Skip("isolated BEpusdt database not configured")
+				}
+				require.Contains(t, dsn, "newapi_bepusdt_test")
+			}
+			oldPath := common.SQLitePath
+			common.SQLitePath = filepath.Join(t.TempDir(), "bepusdt.db")
+			t.Cleanup(func() { common.SQLitePath = oldPath })
+			t.Setenv("BEPUSDT_TEST_DSN", dsn)
+			db, kind, err := chooseDB("BEPUSDT_TEST_DSN", false)
+			require.NoError(t, err)
+			previousDB, previousLog, previousRedis, previousUnit := DB, LOG_DB, common.RedisEnabled, common.QuotaPerUnit
+			previousKind, previousLogKind := common.MainDatabaseType(), common.LogDatabaseType()
+			DB, LOG_DB = db, db
+			common.RedisEnabled = false
+			common.SetDatabaseTypes(kind, kind)
+			t.Cleanup(func() {
+				DB, LOG_DB = previousDB, previousLog
+				common.RedisEnabled = previousRedis
+				common.QuotaPerUnit = previousUnit
+				common.SetDatabaseTypes(previousKind, previousLogKind)
+				sqlDB, _ := db.DB()
+				_ = sqlDB.Close()
+			})
+			versionQuery := "select version()"
+			if dialect == "sqlite" {
+				versionQuery = "select sqlite_version()"
+			}
+			var version string
+			require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+			t.Log(dialect, version)
+			for _, scenario := range []string{"fresh", "upgrade"} {
+				t.Run(scenario, func(t *testing.T) {
+					tables := []any{&BepusdtOrder{}, &TopUp{}, &User{}, &Log{}}
+					require.NoError(t, db.Migrator().DropTable(tables...))
+					t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(tables...)) })
+					if scenario == "upgrade" {
+						require.NoError(t, db.AutoMigrate(&TopUp{}))
+						require.NoError(t, db.Create(&TopUp{TradeNo: "existing-epay", PaymentProvider: PaymentProviderEpay, Amount: 99, Money: 99, Status: common.TopUpStatusSuccess}).Error)
+					}
+					for range 2 {
+						require.NoError(t, db.AutoMigrate(tables...))
+					}
+					if scenario == "upgrade" {
+						var prior TopUp
+						require.NoError(t, db.First(&prior, "trade_no = ?", "existing-epay").Error)
+						require.EqualValues(t, 99, prior.Amount)
+						require.Equal(t, common.TopUpStatusSuccess, prior.Status)
+					}
+					require.NoError(t, db.Create(&User{Id: 1, Username: "bepusdt-user", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 100, AuthVersion: 1}).Error)
+					create := func(id string) {
+						topUp := &TopUp{UserId: 1, TradeNo: id, Amount: 1, Money: 1.25, PaymentMethod: PaymentMethodBepusdt, PaymentProvider: PaymentProviderBepusdt, Status: common.TopUpStatusPending}
+						order := &BepusdtOrder{TradeNo: id, Quota: 500000, MoneyCents: 125, Currency: "USD", GatewayURL: "https://pay.example", NotifyURL: "https://console.example/api/bepusdt/notify", ReturnURL: "https://console.example/wallet", Currencies: "USDT,USDC"}
+						require.NoError(t, CreateBepusdtOrder(topUp, order))
+					}
+					balance := func() int { var user User; require.NoError(t, db.First(&user, 1).Error); return user.Quota }
+					create("BEP-exact")
+					require.ErrorIs(t, SettleBepusdtOrder("BEP-exact", "gateway-exact", 124, 2, "127.0.0.1"), ErrBepusdtOrderMismatch)
+					require.Equal(t, 100, balance())
+					require.NoError(t, SettleBepusdtOrder("BEP-exact", "gateway-exact", 125, 1, "127.0.0.1"))
+					require.Equal(t, 100, balance())
+					common.QuotaPerUnit = 999
+					require.NoError(t, SettleBepusdtOrder("BEP-exact", "gateway-exact", 125, 2, "127.0.0.1"))
+					require.Equal(t, 500100, balance(), "settlement uses the frozen quota, not current configuration")
+					require.NoError(t, SettleBepusdtOrder("BEP-exact", "gateway-exact", 125, 2, "127.0.0.1"))
+					require.ErrorIs(t, SettleBepusdtOrder("BEP-exact", "other-gateway", 125, 2, "127.0.0.1"), ErrBepusdtOrderMismatch)
+					require.Equal(t, 500100, balance())
+					create("BEP-late")
+					require.NoError(t, SettleBepusdtOrder("BEP-late", "gateway-late", 125, 5, "127.0.0.1"))
+					require.Equal(t, common.TopUpStatusPending, GetTopUpByTradeNo("BEP-late").Status)
+					require.Equal(t, 500100, balance())
+					for _, status := range []int{4, 6} {
+						require.NoError(t, SettleBepusdtOrder("BEP-late", "gateway-late", 125, status, "127.0.0.1"))
+						require.Equal(t, common.TopUpStatusExpired, GetTopUpByTradeNo("BEP-late").Status)
+						require.Equal(t, 500100, balance())
+					}
+					require.NoError(t, SettleBepusdtOrder("BEP-late", "gateway-late", 125, 3, "127.0.0.1"))
+					require.NoError(t, SettleBepusdtOrder("BEP-late", "gateway-late", 125, 1, "127.0.0.1"))
+					require.Equal(t, common.TopUpStatusExpired, GetTopUpByTradeNo("BEP-late").Status)
+					require.NoError(t, SettleBepusdtOrder("BEP-late", "gateway-late", 125, 2, "127.0.0.1"))
+					require.Equal(t, 1000100, balance())
+					create("BEP-provider")
+					require.NoError(t, db.Model(&TopUp{}).Where("trade_no = ?", "BEP-provider").Update("payment_provider", PaymentProviderEpay).Error)
+					require.ErrorIs(t, SettleBepusdtOrder("BEP-provider", "gateway-provider", 125, 2, "127.0.0.1"), ErrPaymentMethodMismatch)
+					create("BEP-reused-id")
+					require.Error(t, SettleBepusdtOrder("BEP-reused-id", "gateway-exact", 125, 2, "127.0.0.1"))
+					require.Equal(t, 1000100, balance())
+					create("BEP-capacity")
+					require.NoError(t, db.Model(&User{}).Where("id = ?", 1).Update("quota", common.MaxWalletQuota).Error)
+					require.ErrorIs(t, SettleBepusdtOrder("BEP-capacity", "gateway-capacity", 125, 2, "127.0.0.1"), ErrTopUpQuotaLimitExceeded)
+					require.Equal(t, common.TopUpStatusPending, GetTopUpByTradeNo("BEP-capacity").Status)
+					require.Equal(t, common.MaxWalletQuota, balance())
+					require.NoError(t, db.Model(&User{}).Where("id = ?", 1).Update("quota", 100).Error)
+					create("BEP-race")
+					var wait sync.WaitGroup
+					results := make(chan error, 8)
+					for range 8 {
+						wait.Go(func() { results <- SettleBepusdtOrder("BEP-race", "gateway-race", 125, 2, "127.0.0.1") })
+					}
+					wait.Wait()
+					close(results)
+					for err := range results {
+						if err != nil {
+							require.Equal(t, "sqlite", dialect)
+							require.Contains(t, strings.ToLower(err.Error()), "locked")
+							require.NoError(t, SettleBepusdtOrder("BEP-race", "gateway-race", 125, 2, "127.0.0.1"))
+						}
+					}
+					require.Equal(t, 500100, balance(), "concurrent callbacks credit only once")
+					create("BEP-manual")
+					require.NoError(t, ManualCompleteTopUp("BEP-manual", "127.0.0.1"))
+					require.Equal(t, 1000100, balance(), "manual completion also uses the frozen quota")
+					require.NoError(t, SettleBepusdtOrder("BEP-manual", "gateway-manual", 125, 2, "127.0.0.1"))
+					require.Equal(t, 1000100, balance())
+				})
+			}
+		})
+	}
+}
 
 type MigrationIdentityFields struct {
 	ID        int    `gorm:"primaryKey"`

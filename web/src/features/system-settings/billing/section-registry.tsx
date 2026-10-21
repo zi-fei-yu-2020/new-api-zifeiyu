@@ -177,6 +177,14 @@ const BILLING_SECTIONS = [
           WaffoPancakePrivateKey: settings.WaffoPancakePrivateKey ?? '',
           WaffoPancakeReturnURL: settings.WaffoPancakeReturnURL ?? '',
         }}
+        bepusdtDefaultValues={{
+          BepusdtEnabled: settings.BepusdtEnabled ?? false,
+          BepusdtBaseURL: settings.BepusdtBaseURL ?? '',
+          BepusdtApiKey: settings.BepusdtApiKey ?? '',
+          BepusdtUnitPrice: settings.BepusdtUnitPrice ?? 1,
+          BepusdtMinTopUp: settings.BepusdtMinTopUp ?? 1,
+          BepusdtCurrencies: settings.BepusdtCurrencies ?? 'USDT,USDC',
+        }}
         waffoPancakeProvisionedStoreID={settings.WaffoPancakeStoreID ?? ''}
         waffoPancakeProvisionedProductID={settings.WaffoPancakeProductID ?? ''}
         complianceDefaults={{

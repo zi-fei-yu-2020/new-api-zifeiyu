@@ -261,6 +261,7 @@ export function BillingHistoryDialog({
                           </Label>
                           <div className='text-sm font-semibold text-red-600'>
                             {formatNumber(record.money)}
+                            {record.payment_provider === 'bepusdt' && ' USD'}
                           </div>
                         </div>
                       </div>

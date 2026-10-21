@@ -19,6 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 // Static translation keys that don't get picked up by the t('...') regex.
 // These cover dynamic labels (e.g. constants, configs) that are passed into t at runtime.
 export const STATIC_I18N_KEYS = [
+  'BEpusdt top-up amount must be a multiple of {{step}}',
+  'Invalid BEpusdt configuration',
+  'Configure the BEpusdt gateway URL and API token before enabling payments',
+  'BEpusdt payments are disabled or not configured',
+  'Payment amount is too low or too large',
+  'Configure the server address before accepting payments',
+  'Unable to start BEpusdt payment. Please try again later',
   'Please choose a PNG, JPG or WebP image.',
   'Choose a non-empty image smaller than 10 MB.',
   'This image could not be opened. Please choose another file.',

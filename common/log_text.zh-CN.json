@@ -1,4 +1,9 @@
 {
+  "BEpusdt callback accepted: order=%s status=%d": "BEpusdt 回调已处理：订单=%s 状态=%d",
+  "BEpusdt checkout failed: order=%s error=%s": "BEpusdt 下单失败：订单=%s 错误=%s",
+  "BEpusdt callback rejected: invalid signature or payload": "BEpusdt 回调已拒绝：签名或内容无效",
+  "BEpusdt payment verification failed: order=%s": "BEpusdt 支付复核失败：订单=%s",
+  "BEpusdt settlement failed: order=%s error=%s": "BEpusdt 到账失败：订单=%s 错误=%s",
   "%d quota points": "%d 点额度",
   "%s after refresh: %s": "%s（刷新凭证后重试）: %s",
   "%s failed: %s": "%s 构建失败，%s",

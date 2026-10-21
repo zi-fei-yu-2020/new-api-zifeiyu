@@ -148,6 +148,8 @@ export interface TopupInfo {
   waffo_min_topup?: number
   /** Whether Waffo Pancake topup is enabled */
   enable_waffo_pancake_topup?: boolean
+  enable_bepusdt_topup?: boolean
+  bepusdt_min_topup?: number
   /** Minimum topup amount for Waffo Pancake */
   waffo_pancake_min_topup?: number
   /** Whether redemption code usage is enabled */
@@ -253,6 +255,7 @@ export type TopupStatus = 'success' | 'pending' | 'expired'
  * Topup billing record
  */
 export interface TopupRecord {
+  payment_provider?: string
   /** Record ID */
   id: number
   /** User ID */

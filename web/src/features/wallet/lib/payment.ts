@@ -161,6 +161,7 @@ export function getDefaultPaymentType(topupInfo: TopupInfo | null): string {
   if (topupInfo.enable_waffo_pancake_topup) {
     return PAYMENT_TYPES.WAFFO_PANCAKE
   }
+  if (topupInfo.enable_bepusdt_topup) return PAYMENT_TYPES.BEPUSDT
 
   return DEFAULT_PAYMENT_TYPE
 }
@@ -168,28 +169,33 @@ export function getDefaultPaymentType(topupInfo: TopupInfo | null): string {
 /**
  * Get minimum topup amount from topup info
  */
-export function getMinTopupAmount(topupInfo: TopupInfo | null): number {
-  if (!topupInfo) {
-    return DEFAULT_MIN_TOPUP
+export function getMinTopupAmount(
+  topupInfo: TopupInfo | null,
+  paymentType?: string
+): number {
+  if (!topupInfo) return DEFAULT_MIN_TOPUP
+  const limits: Record<string, number> = {
+    [PAYMENT_TYPES.BEPUSDT]: topupInfo.bepusdt_min_topup ?? DEFAULT_MIN_TOPUP,
+    [PAYMENT_TYPES.STRIPE]: topupInfo.stripe_min_topup ?? DEFAULT_MIN_TOPUP,
+    [PAYMENT_TYPES.WAFFO]: topupInfo.waffo_min_topup ?? DEFAULT_MIN_TOPUP,
+    [PAYMENT_TYPES.WAFFO_PANCAKE]:
+      topupInfo.waffo_pancake_min_topup ?? DEFAULT_MIN_TOPUP,
   }
-
-  if (topupInfo.enable_online_topup) {
-    return topupInfo.min_topup
+  if (paymentType) {
+    return limits[paymentType] ?? topupInfo.min_topup ?? DEFAULT_MIN_TOPUP
   }
-
-  if (topupInfo.enable_stripe_topup) {
-    return topupInfo.stripe_min_topup
-  }
-
-  if (topupInfo.enable_waffo_topup) {
-    return topupInfo.waffo_min_topup || DEFAULT_MIN_TOPUP
-  }
-
-  if (topupInfo.enable_waffo_pancake_topup) {
-    return topupInfo.waffo_pancake_min_topup || DEFAULT_MIN_TOPUP
-  }
-
-  return DEFAULT_MIN_TOPUP
+  const enabled = [
+    topupInfo.enable_online_topup
+      ? (topupInfo.min_topup ?? DEFAULT_MIN_TOPUP)
+      : null,
+    topupInfo.enable_stripe_topup ? limits[PAYMENT_TYPES.STRIPE] : null,
+    topupInfo.enable_waffo_topup ? limits[PAYMENT_TYPES.WAFFO] : null,
+    topupInfo.enable_waffo_pancake_topup
+      ? limits[PAYMENT_TYPES.WAFFO_PANCAKE]
+      : null,
+    topupInfo.enable_bepusdt_topup ? limits[PAYMENT_TYPES.BEPUSDT] : null,
+  ].filter((value): value is number => value !== null)
+  return enabled.length > 0 ? Math.min(...enabled) : DEFAULT_MIN_TOPUP
 }
 
 /**

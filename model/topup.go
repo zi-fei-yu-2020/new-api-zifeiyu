@@ -31,6 +31,7 @@ const (
 	PaymentMethodWaffo        = "waffo"
 	PaymentMethodWaffoPancake = "waffo_pancake"
 	PaymentMethodBalance      = "balance"
+	PaymentMethodBepusdt      = "bepusdt"
 )
 
 const (
@@ -40,6 +41,7 @@ const (
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
 	PaymentProviderBalance      = "balance"
+	PaymentProviderBepusdt      = "bepusdt"
 )
 
 var (
@@ -482,7 +484,13 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 		// - Stripe 订单：Money 代表经分组倍率换算后的美元数量，直接 * QuotaPerUnit
 		// - 其他订单（如易支付）：Amount 为美元数量，* QuotaPerUnit
 		var quotaErr error
-		if topUp.PaymentProvider == PaymentProviderStripe {
+		if topUp.PaymentProvider == PaymentProviderBepusdt {
+			var order BepusdtOrder
+			if err := lockForUpdate(tx).First(&order, "trade_no = ?", tradeNo).Error; err != nil {
+				return err
+			}
+			quotaToAdd = order.Quota
+		} else if topUp.PaymentProvider == PaymentProviderStripe {
 			quotaToAdd, quotaErr = common.WalletQuotaFromDecimalStrict(
 				decimal.NewFromFloat(topUp.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
 			)

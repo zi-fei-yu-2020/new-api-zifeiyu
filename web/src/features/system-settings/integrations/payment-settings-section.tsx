@@ -62,6 +62,11 @@ import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 import { AmountDiscountVisualEditor } from './amount-discount-visual-editor'
 import { AmountOptionsVisualEditor } from './amount-options-visual-editor'
+import { BepusdtSettingsSection } from './bepusdt-settings-section'
+import {
+  DEFAULT_BEPUSDT_SETTINGS,
+  type BepusdtSettingsValues,
+} from './bepusdt-settings-values'
 import { CreemProductsVisualEditor } from './creem-products-visual-editor'
 import { PaymentMethodsVisualEditor } from './payment-methods-visual-editor'
 import {
@@ -179,13 +184,21 @@ const paymentSchema = z.object({
   WaffoPancakeMerchantID: z.string(),
   WaffoPancakePrivateKey: z.string(),
   WaffoPancakeReturnURL: z.string(),
+  BepusdtEnabled: z.boolean(),
+  BepusdtBaseURL: z.string(),
+  BepusdtApiKey: z.string(),
+  BepusdtUnitPrice: z.coerce.number().positive(),
+  BepusdtMinTopUp: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  BepusdtCurrencies: z.string(),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
 type WaffoFormFieldValues = Omit<WaffoSettingsValues, 'WaffoPayMethods'>
 type PaymentBaseFormValues = Omit<
   PaymentFormValues,
-  keyof WaffoFormFieldValues | keyof WaffoPancakeSettingsValues
+  | keyof WaffoFormFieldValues
+  | keyof WaffoPancakeSettingsValues
+  | keyof BepusdtSettingsValues
 >
 
 const CURRENT_COMPLIANCE_TERMS_VERSION = 'v1'
@@ -202,6 +215,7 @@ type PaymentSettingsSectionProps = {
   defaultValues: PaymentBaseFormValues
   waffoDefaultValues: WaffoSettingsValues
   waffoPancakeDefaultValues: WaffoPancakeSettingsValues
+  bepusdtDefaultValues?: BepusdtSettingsValues
   waffoPancakeProvisionedStoreID?: string
   waffoPancakeProvisionedProductID?: string
   complianceDefaults: PaymentComplianceDefaults
@@ -220,6 +234,7 @@ export function PaymentSettingsSection({
   defaultValues,
   waffoDefaultValues,
   waffoPancakeDefaultValues,
+  bepusdtDefaultValues = DEFAULT_BEPUSDT_SETTINGS,
   waffoPancakeProvisionedStoreID,
   waffoPancakeProvisionedProductID,
   complianceDefaults,
@@ -232,8 +247,14 @@ export function PaymentSettingsSection({
       ...defaultValues,
       ...waffoDefaultValues,
       ...waffoPancakeDefaultValues,
+      ...bepusdtDefaultValues,
     }),
-    [defaultValues, waffoDefaultValues, waffoPancakeDefaultValues]
+    [
+      defaultValues,
+      waffoDefaultValues,
+      waffoPancakeDefaultValues,
+      bepusdtDefaultValues,
+    ]
   )
   const initialRef = React.useRef(initialFormValues)
   const defaultsSignature = React.useMemo(
@@ -713,6 +734,27 @@ export function PaymentSettingsSection({
       updates.push({ key: 'WaffoPayMethods', value: sanitized.WaffoPayMethods })
     }
 
+    if (initialRef.current.BepusdtEnabled && !values.BepusdtEnabled) {
+      updates.push({ key: 'BepusdtEnabled', value: false })
+    }
+    for (const key of [
+      'BepusdtBaseURL',
+      'BepusdtApiKey',
+      'BepusdtUnitPrice',
+      'BepusdtMinTopUp',
+      'BepusdtCurrencies',
+    ] as const) {
+      const value =
+        typeof values[key] === 'string'
+          ? String(values[key]).trim()
+          : values[key]
+      if (key === 'BepusdtApiKey' && !value) continue
+      if (value !== initialRef.current[key]) updates.push({ key, value })
+    }
+    if (!initialRef.current.BepusdtEnabled && values.BepusdtEnabled) {
+      updates.push({ key: 'BepusdtEnabled', value: true })
+    }
+
     const hasWaffoPancakeChanges =
       sanitized.WaffoPancakeMerchantID !== initial.WaffoPancakeMerchantID ||
       sanitized.WaffoPancakePrivateKey.length > 0 ||
@@ -906,13 +948,14 @@ export function PaymentSettingsSection({
           />
           <Tabs defaultValue='general' className='min-w-0'>
             <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[44rem] grid-cols-6'>
+              <TabsList className='grid min-w-[52rem] grid-cols-7'>
                 <TabsTrigger value='general'>{t('General')}</TabsTrigger>
                 <TabsTrigger value='epay'>Epay</TabsTrigger>
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
                 <TabsTrigger value='creem'>Creem</TabsTrigger>
                 <TabsTrigger value='waffo-pancake'>Waffo Pancake</TabsTrigger>
                 <TabsTrigger value='waffo'>Waffo</TabsTrigger>
+                <TabsTrigger value='bepusdt'>BEpusdt</TabsTrigger>
               </TabsList>
             </div>
 
@@ -1647,6 +1690,9 @@ export function PaymentSettingsSection({
               />
             </TabsContent>
 
+            <TabsContent value='bepusdt' className={paymentTabContentClassName}>
+              <BepusdtSettingsSection />
+            </TabsContent>
             <TabsContent value='waffo' className={paymentTabContentClassName}>
               <WaffoSettingsSection
                 values={waffoValues}

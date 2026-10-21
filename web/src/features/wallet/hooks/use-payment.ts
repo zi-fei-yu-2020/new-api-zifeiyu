@@ -17,13 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import i18next from 'i18next'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { toast } from 'sonner'
 
+import { isHttpUrl } from '@/lib/content-format'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
   calculateAmount,
+  calculateBepusdtAmount,
+  requestBepusdtPayment,
   calculateStripeAmount,
   calculateWaffoAmount,
   calculateWaffoPancakeAmount,
@@ -31,13 +34,19 @@ import {
   requestStripePayment,
   isApiSuccess,
 } from '../api'
+import { PAYMENT_TYPES } from '../constants'
 import {
   isStripePayment,
   isWaffoPayment,
   isWaffoPancakePayment,
   submitPaymentForm,
 } from '../lib'
-import type { AmountRequest, AmountResponse } from '../types'
+import type {
+  AmountRequest,
+  AmountResponse,
+  PaymentResponse,
+  StripePaymentResponse,
+} from '../types'
 
 // ============================================================================
 // Payment Hook
@@ -50,6 +59,7 @@ export interface PaymentAmountCalculators {
   stripe: AmountCalculator
   waffo: AmountCalculator
   waffoPancake: AmountCalculator
+  bepusdt: AmountCalculator
 }
 
 const defaultPaymentAmountCalculators: PaymentAmountCalculators = {
@@ -57,6 +67,7 @@ const defaultPaymentAmountCalculators: PaymentAmountCalculators = {
   stripe: calculateStripeAmount,
   waffo: calculateWaffoAmount,
   waffoPancake: calculateWaffoPancakeAmount,
+  bepusdt: calculateBepusdtAmount,
 }
 
 export async function requestPaymentAmount(
@@ -65,6 +76,7 @@ export async function requestPaymentAmount(
   calculators: PaymentAmountCalculators = defaultPaymentAmountCalculators
 ): Promise<number> {
   let calculator = calculators.regular
+  if (paymentType === PAYMENT_TYPES.BEPUSDT) calculator = calculators.bepusdt
   if (isStripePayment(paymentType)) {
     calculator = calculators.stripe
   } else if (isWaffoPayment(paymentType)) {
@@ -82,6 +94,7 @@ export async function requestPaymentAmount(
 }
 
 export function usePayment() {
+  const quoteRequest = useRef(0)
   const [amount, setAmount] = useState<number>(0)
   const [calculating, setCalculating] = useState(false)
   const [processing, setProcessing] = useState(false)
@@ -89,19 +102,21 @@ export function usePayment() {
   // Calculate payment amount
   const calculatePaymentAmount = useCallback(
     async (topupAmount: number, paymentType: string) => {
+      const requestID = ++quoteRequest.current
       try {
         setCalculating(true)
+        setAmount(0)
         const calculatedAmount = await requestPaymentAmount(
           topupAmount,
           paymentType
         )
-        setAmount(calculatedAmount)
+        if (requestID === quoteRequest.current) setAmount(calculatedAmount)
         return calculatedAmount
       } catch {
-        setAmount(0)
+        if (requestID === quoteRequest.current) setAmount(0)
         return 0
       } finally {
-        setCalculating(false)
+        if (requestID === quoteRequest.current) setCalculating(false)
       }
     },
     []
@@ -114,21 +129,36 @@ export function usePayment() {
         setProcessing(true)
 
         const isStripe = isStripePayment(paymentType)
+        const isBepusdt = paymentType === PAYMENT_TYPES.BEPUSDT
         const amount = Math.floor(topupAmount)
 
-        const response = isStripe
-          ? await requestStripePayment({
-              amount,
-              payment_method: 'stripe',
-            })
-          : await requestPayment({
-              amount,
-              payment_method: paymentType,
-            })
+        let response: PaymentResponse | StripePaymentResponse
+        if (isBepusdt) response = await requestBepusdtPayment({ amount })
+        else if (isStripe) {
+          response = await requestStripePayment({
+            amount,
+            payment_method: 'stripe',
+          })
+        } else {
+          response = await requestPayment({
+            amount,
+            payment_method: paymentType,
+          })
+        }
 
         if (!isApiSuccess(response)) {
           handleServerError(response, i18next.t('Payment request failed'))
           return false
+        }
+
+        if (isBepusdt) {
+          const link = response.data?.pay_link
+          if (typeof link !== 'string' || !isHttpUrl(link)) {
+            toast.error(i18next.t('Invalid payment redirect URL'))
+            return false
+          }
+          window.location.assign(link)
+          return true
         }
 
         // Handle Stripe payment

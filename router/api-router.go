@@ -62,6 +62,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), controller.GetRatioConfig)
 
 		apiRouter.POST("/stripe/webhook", anonymousRequestBodyLimit, controller.StripeWebhook)
+		apiRouter.POST("/bepusdt/notify", anonymousRequestBodyLimit, controller.BepusdtNotify)
 		apiRouter.POST("/creem/webhook", anonymousRequestBodyLimit, controller.CreemWebhook)
 		apiRouter.POST("/waffo/webhook", anonymousRequestBodyLimit, controller.WaffoWebhook)
 		// :env separates test vs prod URLs so the operator can register each
@@ -130,6 +131,9 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/waffo/amount", controller.RequestWaffoAmount)
 				selfRoute.POST("/waffo/pay", middleware.CriticalRateLimit(), controller.RequestWaffoPay)
 				selfRoute.POST("/waffo-pancake/amount", controller.RequestWaffoPancakeAmount)
+				selfRoute.POST("/bepusdt/amount", controller.RequestBepusdtAmount)
+				selfRoute.POST("/bepusdt/pay", middleware.UserCriticalRateLimit("bepusdt-pay"), controller.RequestBepusdtPay)
+				selfRoute.GET("/bepusdt/orders/:trade_no", middleware.DisableCache(), controller.GetBepusdtPaymentStatus)
 				selfRoute.POST("/waffo-pancake/pay", middleware.CriticalRateLimit(), controller.RequestWaffoPancakePay)
 				selfRoute.POST("/aff_transfer", middleware.UserCriticalRateLimit("aff-transfer"), controller.TransferAffQuota)
 				selfRoute.PUT("/setting", controller.UpdateUserSetting)

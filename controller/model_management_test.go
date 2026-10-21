@@ -33,6 +33,10 @@ import (
 func modelManagementDB(t *testing.T, kind, dsn string) *gorm.DB {
 	t.Helper()
 	database, isolatedDSN := newAuditTestDatabase(t, kind, dsn)
+	// InitDB opens its own connection below; release the database-creation handle.
+	creationConnection, err := database.DB()
+	require.NoError(t, err)
+	require.NoError(t, creationConnection.Close())
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
 	previousMaster, previousSQLite := common.IsMasterNode, common.SQLitePath

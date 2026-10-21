@@ -1,21 +1,256 @@
 package controller
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Calcium-Ion/go-epay/epay"
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+type bepusdtTestGateway struct {
+	db       *gorm.DB
+	paid     atomic.Bool
+	requests atomic.Int64
+	server   *httptest.Server
+}
+
+func setupBepusdtTest(t *testing.T) *bepusdtTestGateway {
+	t.Helper()
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.BepusdtOrder{}, &model.Option{}))
+	confirmPaymentComplianceForTest(t)
+	original := setting.BepusdtOptionValues()
+	originalServer, originalCallback, originalUnit := system_setting.ServerAddress, operation_setting.CustomCallbackAddress, common.QuotaPerUnit
+	originalDisplay := operation_setting.GetGeneralSetting().QuotaDisplayType
+	originalDiscount := operation_setting.GetPaymentSetting().AmountDiscount
+	originalRatio := common.TopupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		for key, value := range original {
+			require.NoError(t, setting.SetBepusdtOption(key, value))
+		}
+		system_setting.ServerAddress = originalServer
+		operation_setting.CustomCallbackAddress = originalCallback
+		common.QuotaPerUnit = originalUnit
+		operation_setting.GetGeneralSetting().QuotaDisplayType = originalDisplay
+		operation_setting.GetPaymentSetting().AmountDiscount = originalDiscount
+		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(originalRatio))
+	})
+	system_setting.ServerAddress = "https://console.example"
+	operation_setting.CustomCallbackAddress = ""
+	common.QuotaPerUnit = 500000
+	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
+	operation_setting.GetPaymentSetting().AmountDiscount = map[int]float64{}
+	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"default":1}`))
+	require.NoError(t, db.Create(&model.User{Id: 1, Username: "bepusdt-buyer", Quota: 100, Group: "default", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, AuthVersion: 1}).Error)
+	fixture := &bepusdtTestGateway{db: db}
+	var mutex sync.Mutex
+	orders := map[string]service.BepusdtCheckout{}
+	fixture.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		fixture.requests.Add(1)
+		var payload map[string]any
+		require.NoError(t, common.DecodeJson(request.Body, &payload))
+		expected, err := service.SignBepusdt(payload, "test-secret")
+		require.NoError(t, err)
+		require.Equal(t, expected, payload["signature"])
+		require.Equal(t, "USD", payload["fiat"])
+		id := payload["order_id"].(string)
+		mutex.Lock()
+		order, found := orders[id]
+		if !found {
+			order = service.BepusdtCheckout{OrderID: id, TradeID: "gateway-" + id, Amount: fmt.Sprint(payload["amount"]), Fiat: "USD", Status: 1, PaymentURL: fixture.server.URL + "/pay/checkout/gateway-" + id}
+			orders[id] = order
+		}
+		if found && fixture.paid.Load() {
+			order.Status = 2
+		}
+		mutex.Unlock()
+		data, err := common.Marshal(map[string]any{"status_code": 200, "data": order})
+		require.NoError(t, err)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write(data)
+	}))
+	t.Cleanup(fixture.server.Close)
+	for key, value := range map[string]string{"BepusdtEnabled": "false", "BepusdtBaseURL": fixture.server.URL, "BepusdtApiKey": "test-secret", "BepusdtUnitPrice": "1", "BepusdtMinTopUp": "1", "BepusdtCurrencies": "USDT,USDC"} {
+		require.NoError(t, setting.SetBepusdtOption(key, value))
+	}
+	return fixture
+}
+
+func bepusdtRequest(handler gin.HandlerFunc, userID int, body []byte) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("id", userID)
+	handler(ctx)
+	return recorder
+}
+
+func createBepusdtCheckoutForTest(t *testing.T, fixture *bepusdtTestGateway) string {
+	t.Helper()
+	require.NoError(t, setting.SetBepusdtOption("BepusdtEnabled", "true"))
+	response := bepusdtRequest(RequestBepusdtPay, 1, []byte(`{"amount":2}`))
+	var result struct {
+		Message string `json:"message"`
+		Data    struct {
+			OrderID string `json:"order_id"`
+			Link    string `json:"pay_link"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	require.Equal(t, "success", result.Message, response.Body.String())
+	require.True(t, strings.HasPrefix(result.Data.Link, fixture.server.URL+"/pay/"))
+	require.NotEmpty(t, result.Data.OrderID)
+	return result.Data.OrderID
+}
+
+func bepusdtCallback(t *testing.T, orderID, key string, amount float64, status int) *httptest.ResponseRecorder {
+	t.Helper()
+	payload := map[string]any{"order_id": orderID, "trade_id": "gateway-" + orderID, "amount": amount, "status": status, "actual_amount": "2.00", "token": "wallet-address", "block_transaction_id": "tx-123"}
+	signature, err := service.SignBepusdt(payload, key)
+	require.NoError(t, err)
+	payload["signature"] = signature
+	body, err := common.Marshal(payload)
+	require.NoError(t, err)
+	return bepusdtRequest(BepusdtNotify, 0, body)
+}
+
+func TestBepusdtDisabledDoesNotExposeOrCreatePayments(t *testing.T) {
+	fixture := setupBepusdtTest(t)
+	response := bepusdtRequest(RequestBepusdtPay, 1, []byte(`{"amount":2}`))
+	require.Contains(t, response.Body.String(), "BEpusdt payments are disabled")
+	var count int64
+	require.NoError(t, fixture.db.Model(&model.TopUp{}).Count(&count).Error)
+	require.Zero(t, count)
+	originalMethods := operation_setting.PayMethods
+	operation_setting.PayMethods = []map[string]string{{"name": "draft", "type": "bepusdt"}}
+	t.Cleanup(func() { operation_setting.PayMethods = originalMethods })
+	response = bepusdtRequest(GetTopUpInfo, 1, nil)
+	var result struct {
+		Data struct {
+			Enabled bool                `json:"enable_bepusdt_topup"`
+			Methods []map[string]string `json:"pay_methods"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	require.False(t, result.Data.Enabled)
+	for _, method := range result.Data.Methods {
+		require.NotEqual(t, "bepusdt", method["type"])
+	}
+	require.Zero(t, fixture.requests.Load())
+}
+
+func TestBepusdtPaidCallbackVerifiesGatewayAndUsesFrozenQuota(t *testing.T) {
+	fixture := setupBepusdtTest(t)
+	orderID := createBepusdtCheckoutForTest(t, fixture)
+	require.Equal(t, http.StatusForbidden, bepusdtCallback(t, orderID, "wrong-key", 2, 2).Code)
+	require.Equal(t, http.StatusBadRequest, bepusdtCallback(t, orderID, "test-secret", 1, 2).Code)
+	require.Equal(t, http.StatusServiceUnavailable, bepusdtCallback(t, orderID, "test-secret", 2, 2).Code, "a signed callback cannot credit an order that the gateway still reports unpaid")
+	fixture.paid.Store(true)
+	require.NoError(t, setting.SetBepusdtOption("BepusdtEnabled", "false"))
+	require.NoError(t, setting.SetBepusdtOption("BepusdtUnitPrice", "10"))
+	require.NoError(t, setting.SetBepusdtOption("BepusdtBaseURL", ""))
+	common.QuotaPerUnit = 99
+	response := bepusdtCallback(t, orderID, "test-secret", 2, 2)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, "ok", response.Body.String())
+	var user model.User
+	require.NoError(t, fixture.db.First(&user, 1).Error)
+	require.Equal(t, 1000100, user.Quota)
+	requests := fixture.requests.Load()
+	require.Equal(t, http.StatusOK, bepusdtCallback(t, orderID, "test-secret", 2, 2).Code)
+	require.Equal(t, requests, fixture.requests.Load(), "duplicate callbacks do not require another gateway request")
+	require.NoError(t, fixture.db.First(&user, 1).Error)
+	require.Equal(t, 1000100, user.Quota)
+}
+
+func TestBepusdtSettlementFailureReturnsRetryableStatus(t *testing.T) {
+	fixture := setupBepusdtTest(t)
+	orderID := createBepusdtCheckoutForTest(t, fixture)
+	fixture.paid.Store(true)
+	require.NoError(t, fixture.db.Model(&model.User{}).Where("id = ?", 1).Update("quota", common.MaxWalletQuota).Error)
+	require.Equal(t, http.StatusInternalServerError, bepusdtCallback(t, orderID, "test-secret", 2, 2).Code)
+	require.Equal(t, common.TopUpStatusPending, model.GetTopUpByTradeNo(orderID).Status)
+	require.NoError(t, fixture.db.Model(&model.User{}).Where("id = ?", 1).Update("quota", 0).Error)
+	require.Equal(t, http.StatusOK, bepusdtCallback(t, orderID, "test-secret", 2, 2).Code)
+}
+
+func TestBepusdtReturnDoesNotCreditAndOtherUsersCannotReadOrder(t *testing.T) {
+	fixture := setupBepusdtTest(t)
+	orderID := createBepusdtCheckoutForTest(t, fixture)
+	for _, userID := range []int{1, 2} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Set("id", userID)
+		ctx.Params = gin.Params{{Key: "trade_no", Value: orderID}}
+		GetBepusdtPaymentStatus(ctx)
+		if userID == 1 {
+			require.Equal(t, http.StatusOK, recorder.Code)
+			require.Contains(t, recorder.Body.String(), "pending")
+		} else {
+			require.Equal(t, http.StatusNotFound, recorder.Code)
+		}
+	}
+	var user model.User
+	require.NoError(t, fixture.db.First(&user, 1).Error)
+	require.Equal(t, 100, user.Quota)
+}
+
+func TestBepusdtTokenDisplayRejectsTruncationAndQuotesWholeCredits(t *testing.T) {
+	fixture := setupBepusdtTest(t)
+	require.NoError(t, setting.SetBepusdtOption("BepusdtEnabled", "true"))
+	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeTokens
+	response := bepusdtRequest(RequestBepusdtAmount, 1, []byte(`{"amount":750000}`))
+	require.Contains(t, response.Body.String(), "multiple")
+	response = bepusdtRequest(RequestBepusdtAmount, 1, []byte(`{"amount":1000000}`))
+	require.Contains(t, response.Body.String(), `"data":"2.00"`)
+	response = bepusdtRequest(GetTopUpInfo, 1, nil)
+	require.Contains(t, response.Body.String(), `"bepusdt_min_topup":500000`)
+	require.Zero(t, fixture.requests.Load())
+}
+
+func TestBepusdtConfigurationNeverReturnsTheAPIToken(t *testing.T) {
+	setupBepusdtTest(t)
+	original := common.OptionMap
+	common.OptionMap = map[string]string{"BepusdtApiKey": "test-secret", "BepusdtBaseURL": "https://pay.example"}
+	t.Cleanup(func() { common.OptionMap = original })
+	response := bepusdtRequest(GetOptions, 1, nil)
+	require.NotContains(t, response.Body.String(), "test-secret")
+	require.Contains(t, response.Body.String(), "BepusdtBaseURL")
+}
+
+func TestBepusdtNonPaymentNotificationsNeverCredit(t *testing.T) {
+	fixture := setupBepusdtTest(t)
+	for _, status := range []int{1, 3, 4, 5, 6} {
+		orderID := createBepusdtCheckoutForTest(t, fixture)
+		require.Equal(t, http.StatusOK, bepusdtCallback(t, orderID, "test-secret", 2, status).Code)
+		var user model.User
+		require.NoError(t, fixture.db.First(&user, 1).Error)
+		require.Equal(t, 100, user.Quota)
+		expected := common.TopUpStatusPending
+		if status == 3 || status == 4 || status == 6 {
+			expected = common.TopUpStatusExpired
+		}
+		require.Equal(t, expected, model.GetTopUpByTradeNo(orderID).Status)
+	}
+}
 
 func confirmPaymentComplianceForTest(t *testing.T) {
 	t.Helper()

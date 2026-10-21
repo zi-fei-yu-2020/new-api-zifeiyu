@@ -18,12 +18,37 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBepusdtOptionsRequireExplicitEnableAndValidConfiguration(t *testing.T) {
+	original := setting.BepusdtOptionValues()
+	t.Cleanup(func() {
+		for key, value := range original {
+			require.NoError(t, setting.SetBepusdtOption(key, value))
+		}
+	})
+	require.NoError(t, setting.SetBepusdtOption("BepusdtEnabled", "false"))
+	require.NoError(t, setting.SetBepusdtOption("BepusdtBaseURL", ""))
+	require.NoError(t, setting.SetBepusdtOption("BepusdtApiKey", ""))
+	require.Error(t, setting.ValidateBepusdtOption("BepusdtEnabled", "true"))
+	require.NoError(t, setting.SetBepusdtOption("BepusdtBaseURL", "https://pay.example/"))
+	require.NoError(t, setting.SetBepusdtOption("BepusdtApiKey", "test-secret"))
+	require.False(t, setting.GetBepusdtConfig().Enabled)
+	require.NoError(t, setting.ValidateBepusdtOption("BepusdtEnabled", "true"))
+	require.NoError(t, setting.SetBepusdtOption("BepusdtEnabled", "true"))
+	require.True(t, setting.GetBepusdtConfig().Ready())
+	for _, entry := range [][2]string{{"BepusdtBaseURL", "javascript:alert(1)"}, {"BepusdtBaseURL", "https://user:secret@pay.example"}, {"BepusdtBaseURL", "https://pay.example?token=secret"}, {"BepusdtBaseURL", ""}, {"BepusdtUnitPrice", "0"}, {"BepusdtUnitPrice", "NaN"}, {"BepusdtUnitPrice", "1e1000000"}, {"BepusdtMinTopUp", "0"}, {"BepusdtCurrencies", "unsupported"}} {
+		require.Error(t, setting.ValidateBepusdtOption(entry[0], entry[1]))
+	}
+	require.NoError(t, setting.SetBepusdtOption("BepusdtEnabled", "false"))
+	require.Equal(t, "test-secret", setting.GetBepusdtConfig().APIKey)
+}
 
 func TestUpdateOptionRejectsInvalidTaskBillingExpressions(t *testing.T) {
 	const pluginKey = "billing-save-probe"

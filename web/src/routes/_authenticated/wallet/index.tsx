@@ -23,6 +23,12 @@ import { Wallet } from '@/features/wallet'
 
 const walletSearchSchema = z.object({
   show_history: z.boolean().optional(),
+  bepusdt_order: z
+    .string()
+    .max(64)
+    .regex(/^BEP-[a-zA-Z0-9-]+$/)
+    .optional()
+    .catch(undefined),
 })
 
 export const Route = createFileRoute('/_authenticated/wallet/')({
@@ -31,6 +37,8 @@ export const Route = createFileRoute('/_authenticated/wallet/')({
 })
 
 function RouteComponent() {
-  const { show_history } = Route.useSearch()
-  return <Wallet initialShowHistory={show_history} />
+  const { show_history, bepusdt_order } = Route.useSearch()
+  return (
+    <Wallet initialShowHistory={show_history} bepusdtOrderID={bepusdt_order} />
+  )
 }

@@ -32,7 +32,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatLocalCurrencyAmount } from '@/lib/currency'
 
-import { DEFAULT_DISCOUNT_RATE } from '../../constants'
+import { DEFAULT_DISCOUNT_RATE, PAYMENT_TYPES } from '../../constants'
 import { formatCurrency, getPaymentIcon } from '../../lib'
 import type { PaymentMethod } from '../../types'
 
@@ -62,6 +62,7 @@ export function PaymentConfirmDialog({
   usdExchangeRate = 1,
 }: PaymentConfirmDialogProps) {
   const { t } = useTranslation()
+  const isBepusdt = paymentMethod?.type === PAYMENT_TYPES.BEPUSDT
   const hasDiscount = discountRate > 0 && discountRate < 1 && paymentAmount > 0
   const originalAmount = hasDiscount ? paymentAmount / discountRate : 0
   const discountAmount = hasDiscount ? originalAmount - paymentAmount : 0
@@ -102,10 +103,12 @@ export function PaymentConfirmDialog({
               <div className='flex items-baseline gap-2'>
                 <span className='text-2xl font-semibold'>
                   {formatCurrency(paymentAmount)}
+                  {isBepusdt && ' USD'}
                 </span>
                 {hasDiscount && (
                   <span className='text-muted-foreground text-sm line-through'>
                     {formatCurrency(originalAmount)}
+                    {isBepusdt && ' USD'}
                   </span>
                 )}
               </div>
@@ -118,6 +121,7 @@ export function PaymentConfirmDialog({
                 <span className='text-muted-foreground'>{t('You save')}</span>
                 <span className='font-semibold text-green-600'>
                   {formatCurrency(discountAmount)}
+                  {isBepusdt && ' USD'}
                 </span>
               </div>
             </div>
@@ -145,7 +149,12 @@ export function PaymentConfirmDialog({
           <AlertDialogCancel disabled={processing}>
             {t('Cancel')}
           </AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm} disabled={processing}>
+          <AlertDialogAction
+            onClick={onConfirm}
+            disabled={
+              processing || (isBepusdt && (calculating || paymentAmount <= 0))
+            }
+          >
             {processing && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
             {t('Confirm Payment')}
           </AlertDialogAction>

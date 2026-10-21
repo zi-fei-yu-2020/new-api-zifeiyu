@@ -61,6 +61,7 @@ interface RechargeFormCardProps {
   topupAmount: number
   onTopupAmountChange: (amount: number) => void
   paymentAmount: number
+  paymentCurrency?: string
   calculating: boolean
   onPaymentMethodSelect: (method: PaymentMethod) => void
   paymentLoading: string | null
@@ -91,6 +92,7 @@ export function RechargeFormCard({
   topupAmount,
   onTopupAmountChange,
   paymentAmount,
+  paymentCurrency,
   calculating,
   onPaymentMethodSelect,
   paymentLoading,
@@ -131,6 +133,7 @@ export function RechargeFormCard({
   }
 
   const hasConfigurableTopup =
+    topupInfo?.enable_bepusdt_topup ||
     topupInfo?.enable_online_topup ||
     topupInfo?.enable_stripe_topup ||
     enableWaffoTopup ||
@@ -265,25 +268,29 @@ export function RechargeFormCard({
                               </div>
                             )}
                           </div>
-                          <div className='text-muted-foreground mt-1.5 w-full text-xs sm:mt-2'>
-                            {hasDiscount && savedAmount > 0 ? (
-                              <Trans
-                                t={t}
-                                i18nKey='Pay {{amount}} <savings>• Save {{saved}}</savings>'
-                                values={{
+                          {!topupInfo?.enable_bepusdt_topup && (
+                            <div className='text-muted-foreground mt-1.5 w-full text-xs sm:mt-2'>
+                              {hasDiscount && savedAmount > 0 ? (
+                                <Trans
+                                  t={t}
+                                  i18nKey='Pay {{amount}} <savings>• Save {{saved}}</savings>'
+                                  values={{
+                                    amount: formatCurrency(actualPrice),
+                                    saved: formatCurrency(savedAmount),
+                                  }}
+                                  components={{
+                                    savings: (
+                                      <span className='text-green-600' />
+                                    ),
+                                  }}
+                                />
+                              ) : (
+                                t('Pay {{amount}}', {
                                   amount: formatCurrency(actualPrice),
-                                  saved: formatCurrency(savedAmount),
-                                }}
-                                components={{
-                                  savings: <span className='text-green-600' />,
-                                }}
-                              />
-                            ) : (
-                              t('Pay {{amount}}', {
-                                amount: formatCurrency(actualPrice),
-                              })
-                            )}
-                          </div>
+                                })
+                              )}
+                            </div>
+                          )}
                         </Button>
                       )
                     })}
@@ -317,6 +324,7 @@ export function RechargeFormCard({
                     ) : (
                       <span className='text-sm font-semibold'>
                         {formatCurrency(paymentAmount)}
+                        {paymentCurrency && ` ${paymentCurrency}`}
                       </span>
                     )}
                   </div>
@@ -332,7 +340,7 @@ export function RechargeFormCard({
                     {topupInfo?.pay_methods?.map((method) => {
                       const minTopup = Math.max(
                         method.min_topup || 0,
-                        getMinTopupAmount(topupInfo)
+                        getMinTopupAmount(topupInfo, method.type)
                       )
                       const disabled = minTopup > topupAmount
                       const disabledReason = disabled

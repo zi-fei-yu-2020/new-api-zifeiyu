@@ -23,8 +23,10 @@ import { SectionPageLayout } from '@/components/layout'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
+import { BepusdtPaymentStatus } from './components/bepusdt-payment-status'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
@@ -57,6 +59,7 @@ import type {
 
 interface WalletProps {
   initialShowHistory?: boolean
+  bepusdtOrderID?: string
 }
 
 export function Wallet(props: WalletProps) {
@@ -86,7 +89,8 @@ export function Wallet(props: WalletProps) {
 
   // Calculate effective exchange rate - when display type is USD, use rate of 1
   const effectiveUsdExchangeRate = useMemo(() => {
-    return currency?.quotaDisplayType === 'USD'
+    return currency?.quotaDisplayType === 'USD' ||
+      currency?.quotaDisplayType === 'TOKENS'
       ? 1
       : currency?.usdExchangeRate || 1
   }, [currency?.quotaDisplayType, currency?.usdExchangeRate])
@@ -115,7 +119,16 @@ export function Wallet(props: WalletProps) {
       setUserLoading(true)
       const response = await getSelf()
       if (response.success && response.data) {
-        setUser(response.data as UserWalletData)
+        const refreshed = response.data as UserWalletData
+        setUser(refreshed)
+        const auth = useAuthStore.getState().auth
+        if (auth.user?.id === refreshed.id) {
+          auth.setUser({
+            ...auth.user,
+            quota: refreshed.quota,
+            used_quota: refreshed.used_quota,
+          })
+        }
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -177,7 +190,7 @@ export function Wallet(props: WalletProps) {
 
     try {
       // Validate minimum topup
-      const minTopup = getMinTopupAmount(topupInfo)
+      const minTopup = getMinTopupAmount(topupInfo, method.type)
       if (topupAmount < minTopup) {
         return
       }
@@ -289,6 +302,10 @@ export function Wallet(props: WalletProps) {
         <SectionPageLayout.Content>
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
+            <BepusdtPaymentStatus
+              orderID={props.bepusdtOrderID}
+              onPaid={fetchUser}
+            />
 
             <div
               className={
@@ -306,6 +323,11 @@ export function Wallet(props: WalletProps) {
                   topupAmount={topupAmount}
                   onTopupAmountChange={handleTopupAmountChange}
                   paymentAmount={paymentAmount}
+                  paymentCurrency={
+                    getCurrentPaymentType() === PAYMENT_TYPES.BEPUSDT
+                      ? 'USD'
+                      : undefined
+                  }
                   calculating={calculating}
                   onPaymentMethodSelect={handlePaymentMethodSelect}
                   paymentLoading={paymentLoading}

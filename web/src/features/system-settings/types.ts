@@ -346,6 +346,12 @@ export type BillingSettings = {
   WaffoReturnUrl: string
   WaffoPayMethods: string
   WaffoPancakeEnabled: boolean
+  BepusdtEnabled: boolean
+  BepusdtBaseURL: string
+  BepusdtApiKey: string
+  BepusdtUnitPrice: number
+  BepusdtMinTopUp: number
+  BepusdtCurrencies: string
   WaffoPancakeMerchantID: string
   WaffoPancakePrivateKey: string
   WaffoPancakeReturnURL: string

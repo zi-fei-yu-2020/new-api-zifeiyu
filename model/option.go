@@ -122,6 +122,9 @@ func InitOptionMap() {
 	common.OptionMap["WaffoMinTopUp"] = strconv.Itoa(setting.WaffoMinTopUp)
 	common.OptionMap["WaffoPayMethods"] = setting.WaffoPayMethods2JsonString()
 	common.OptionMap["WaffoPancakeEnabled"] = strconv.FormatBool(setting.WaffoPancakeEnabled)
+	for key, value := range setting.BepusdtOptionValues() {
+		common.OptionMap[key] = value
+	}
 	common.OptionMap["WaffoPancakeMerchantID"] = setting.WaffoPancakeMerchantID
 	common.OptionMap["WaffoPancakePrivateKey"] = setting.WaffoPancakePrivateKey
 	common.OptionMap["WaffoPancakeReturnURL"] = setting.WaffoPancakeReturnURL
@@ -233,6 +236,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if strings.HasPrefix(key, "Bepusdt") {
+		return setting.ValidateBepusdtOption(key, value)
+	}
 	if key == "game_center" {
 		var settings GameSettings
 		if err := common.Unmarshal([]byte(value), &settings); err != nil {
@@ -388,6 +394,9 @@ func updateOptionMap(key string, value string) (err error) {
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
 	common.OptionMap[key] = value
+	if strings.HasPrefix(key, "Bepusdt") {
+		return setting.SetBepusdtOption(key, value)
+	}
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
 	if handleConfigUpdate(key, value) {

@@ -82,6 +82,34 @@ export async function calculateAmount(
   return res.data
 }
 
+export async function calculateBepusdtAmount(
+  request: AmountRequest
+): Promise<AmountResponse> {
+  const response = await api.post('/api/user/bepusdt/amount', request, {
+    skipBusinessError: true,
+  })
+  return response.data
+}
+
+export async function requestBepusdtPayment(
+  request: AmountRequest
+): Promise<StripePaymentResponse> {
+  const response = await api.post('/api/user/bepusdt/pay', request, {
+    skipBusinessError: true,
+  })
+  return response.data
+}
+
+export async function getBepusdtPaymentStatus(
+  orderID: string
+): Promise<ApiResponse<{ status: string; order_id: string }>> {
+  const response = await api.get(
+    `/api/user/bepusdt/orders/${encodeURIComponent(orderID)}`,
+    { skipErrorHandler: true }
+  )
+  return response.data
+}
+
 /**
  * Calculate payment amount for Stripe payment
  */
