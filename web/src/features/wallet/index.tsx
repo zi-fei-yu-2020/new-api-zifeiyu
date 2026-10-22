@@ -75,6 +75,7 @@ export function Wallet(props: WalletProps) {
   >(null)
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
+  const [bepusdtDialogOpen, setBepusdtDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [redemptionCode, setRedemptionCode] = useState('')
@@ -95,6 +96,7 @@ export function Wallet(props: WalletProps) {
       : currency?.usdExchangeRate || 1
   }, [currency?.quotaDisplayType, currency?.usdExchangeRate])
   const {
+    bepusdtCheckout,
     amount: paymentAmount,
     calculating,
     processing,
@@ -220,6 +222,9 @@ export function Wallet(props: WalletProps) {
 
     if (success) {
       setConfirmDialogOpen(false)
+      if (selectedPaymentMethod.type === PAYMENT_TYPES.BEPUSDT) {
+        setBepusdtDialogOpen(true)
+      }
       await fetchUser()
     }
   }
@@ -303,8 +308,11 @@ export function Wallet(props: WalletProps) {
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
             <BepusdtPaymentStatus
-              orderID={props.bepusdtOrderID}
+              orderID={bepusdtCheckout?.orderID ?? props.bepusdtOrderID}
               onPaid={fetchUser}
+              checkoutURL={bepusdtCheckout?.paymentURL}
+              checkoutOpen={bepusdtDialogOpen}
+              onCheckoutOpenChange={setBepusdtDialogOpen}
             />
 
             <div

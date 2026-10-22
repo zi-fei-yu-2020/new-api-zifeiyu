@@ -7705,6 +7705,9 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "BEpusdt checkout": "BEpusdt 收銀台",
+    "Choose a currency and network to pay. Your balance updates after payment is confirmed.": "選擇幣種和網路完成付款，確認入帳後將自動更新餘額。",
+    "Continue payment": "繼續付款"
   }
 }

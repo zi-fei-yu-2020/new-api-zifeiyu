@@ -29,6 +29,7 @@ import type {
   AmountResponse,
   PaymentResponse,
   StripePaymentResponse,
+  BepusdtPaymentResponse,
   AffiliateCodeResponse,
   AffiliateTransferResponse,
   BillingHistoryResponse,
@@ -93,7 +94,7 @@ export async function calculateBepusdtAmount(
 
 export async function requestBepusdtPayment(
   request: AmountRequest
-): Promise<StripePaymentResponse> {
+): Promise<BepusdtPaymentResponse> {
   const response = await api.post('/api/user/bepusdt/pay', request, {
     skipBusinessError: true,
   })

@@ -94,6 +94,10 @@ export async function requestPaymentAmount(
 }
 
 export function usePayment() {
+  const [bepusdtCheckout, setBepusdtCheckout] = useState<{
+    orderID: string
+    paymentURL: string
+  } | null>(null)
   const quoteRequest = useRef(0)
   const [amount, setAmount] = useState<number>(0)
   const [calculating, setCalculating] = useState(false)
@@ -153,11 +157,20 @@ export function usePayment() {
 
         if (isBepusdt) {
           const link = response.data?.pay_link
-          if (typeof link !== 'string' || !isHttpUrl(link)) {
+          const orderID =
+            response.data && 'order_id' in response.data
+              ? response.data.order_id
+              : undefined
+          if (
+            typeof link !== 'string' ||
+            !isHttpUrl(link) ||
+            typeof orderID !== 'string' ||
+            !/^BEP-[A-Za-z0-9_-]+$/.test(orderID)
+          ) {
             toast.error(i18next.t('Invalid payment redirect URL'))
             return false
           }
-          window.location.assign(link)
+          setBepusdtCheckout({ orderID, paymentURL: link })
           return true
         }
 
@@ -190,6 +203,7 @@ export function usePayment() {
   )
 
   return {
+    bepusdtCheckout,
     amount,
     calculating,
     processing,

@@ -7705,6 +7705,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "BEpusdt checkout": "Оплата BEpusdt",
+    "Choose a currency and network to pay. Your balance updates after payment is confirmed.": "Выберите валюту и сеть для оплаты. Баланс обновится после подтверждения платежа.",
+    "Continue payment": "Продолжить оплату"
   }
 }

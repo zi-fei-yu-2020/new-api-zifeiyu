@@ -26,13 +26,20 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getBepusdtPaymentStatus } from '../api'
+import { BepusdtCheckoutDialog } from './dialogs/bepusdt-checkout-dialog'
 
 export function BepusdtPaymentStatus({
   orderID,
   onPaid,
+  checkoutURL,
+  checkoutOpen = false,
+  onCheckoutOpenChange,
 }: {
   orderID?: string
   onPaid: () => Promise<void>
+  checkoutURL?: string
+  checkoutOpen?: boolean
+  onCheckoutOpenChange?: (open: boolean) => void
 }) {
   const { t } = useTranslation()
   const userID = useAuthStore((state) => state.auth.user?.id)
@@ -68,20 +75,49 @@ export function BepusdtPaymentStatus({
   }
   if (query.isError) message = t('Unable to load BEpusdt payment status.')
   return (
-    <Alert>
-      <AlertDescription className='flex flex-wrap items-center justify-between gap-2'>
-        <span>{message}</span>
-        {query.data?.status !== 'success' && (
-          <Button
-            size='sm'
-            variant='outline'
-            disabled={query.isFetching}
-            onClick={() => void query.refetch()}
-          >
-            {t('Refresh')}
-          </Button>
-        )}
-      </AlertDescription>
-    </Alert>
+    <>
+      <Alert>
+        <AlertDescription className='flex flex-wrap items-center justify-between gap-2'>
+          <span>{message}</span>
+          {query.data?.status !== 'success' && (
+            <div className='flex flex-wrap gap-2'>
+              {checkoutURL &&
+                onCheckoutOpenChange &&
+                query.data?.status !== 'expired' &&
+                query.data?.status !== 'failed' && (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={() => onCheckoutOpenChange(true)}
+                  >
+                    {t('Continue payment')}
+                  </Button>
+                )}
+              <Button
+                size='sm'
+                variant='outline'
+                disabled={query.isFetching}
+                onClick={() => void query.refetch()}
+              >
+                {t('Refresh')}
+              </Button>
+            </div>
+          )}
+        </AlertDescription>
+      </Alert>
+      {checkoutURL && onCheckoutOpenChange && (
+        <BepusdtCheckoutDialog
+          key={orderID}
+          open={checkoutOpen}
+          onOpenChange={onCheckoutOpenChange}
+          orderID={orderID}
+          paymentURL={checkoutURL}
+          status={query.data?.status}
+          message={message}
+          refreshing={query.isFetching}
+          onRefresh={() => void query.refetch()}
+        />
+      )}
+    </>
   )
 }

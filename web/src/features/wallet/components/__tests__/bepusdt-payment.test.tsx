@@ -34,6 +34,7 @@ import { requestPaymentAmount, usePayment } from '../../hooks/use-payment'
 import { getMinTopupAmount } from '../../lib/payment'
 import type { TopupInfo } from '../../types'
 import { BepusdtPaymentStatus } from '../bepusdt-payment-status'
+import { BepusdtCheckoutDialog } from '../dialogs/bepusdt-checkout-dialog'
 import { PaymentConfirmDialog } from '../dialogs/payment-confirm-dialog'
 
 afterEach(() => {
@@ -146,4 +147,101 @@ test('a late quote from another gateway cannot replace the selected BEpusdt quot
   })
   expect(result.current.amount).toBe(1)
   expect(result.current.calculating).toBe(false)
+})
+
+test('BEpusdt creates checkout state without navigating away from the wallet', async () => {
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      message: 'success',
+      data: {
+        pay_link: 'https://pay.example/pay/checkout/gateway-1',
+        order_id: 'BEP-order-1',
+      },
+    },
+  })
+  const previousURL = window.location.href
+  const { result } = renderHook(() => usePayment())
+  await act(async () => {
+    expect(await result.current.processPayment(10, 'bepusdt')).toBe(true)
+  })
+  expect(result.current.bepusdtCheckout).toEqual({
+    orderID: 'BEP-order-1',
+    paymentURL: 'https://pay.example/pay/checkout/gateway-1',
+  })
+  expect(window.location.href).toBe(previousURL)
+})
+
+test('BEpusdt refuses checkout responses without a trackable order ID', async () => {
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      message: 'success',
+      data: { pay_link: 'https://pay.example/pay/checkout/gateway-1' },
+    },
+  })
+  const { result } = renderHook(() => usePayment())
+  await act(async () => {
+    expect(await result.current.processPayment(10, 'bepusdt')).toBe(false)
+  })
+  expect(result.current.bepusdtCheckout).toBeNull()
+})
+
+test('checkout dialog offers a fallback and replaces the frame after server-confirmed payment', async () => {
+  const onOpenChange = vi.fn()
+  const props = {
+    open: true,
+    onOpenChange,
+    orderID: 'BEP-order-1',
+    paymentURL: 'https://pay.example/pay/checkout/gateway-1',
+    status: 'pending',
+    message: 'Waiting for payment',
+    refreshing: false,
+    onRefresh: vi.fn(),
+  }
+  const { rerender } = render(<BepusdtCheckoutDialog {...props} />)
+  const frame = screen.getByTitle('BEpusdt checkout')
+  expect(frame).toHaveAttribute('src', props.paymentURL)
+  expect(frame.getAttribute('sandbox')?.split(' ')).not.toContain(
+    'allow-top-navigation'
+  )
+  expect(screen.getByRole('link', { name: 'Open in new tab' })).toHaveAttribute(
+    'href',
+    props.paymentURL
+  )
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Refresh' }))
+  expect(props.onRefresh).toHaveBeenCalledTimes(1)
+  rerender(
+    <BepusdtCheckoutDialog
+      {...props}
+      status='success'
+      message='Payment credited'
+    />
+  )
+  expect(screen.queryByTitle('BEpusdt checkout')).not.toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('Payment credited')
+  await userEvent
+    .setup()
+    .click(
+      screen.getAllByRole('button', { name: 'Close' }).at(-1) as HTMLElement
+    )
+  expect(onOpenChange.mock.lastCall?.[0]).toBe(false)
+})
+
+test('same-origin checkouts use the new-tab fallback instead of a script-enabled frame', () => {
+  render(
+    <BepusdtCheckoutDialog
+      open
+      onOpenChange={vi.fn()}
+      orderID='BEP-order-1'
+      paymentURL={`${window.location.origin}/pay/checkout/gateway-1`}
+      status='pending'
+      message='Waiting for payment'
+      refreshing={false}
+      onRefresh={vi.fn()}
+    />
+  )
+  expect(screen.queryByTitle('BEpusdt checkout')).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Open in new tab' })).toHaveAttribute(
+    'target',
+    '_blank'
+  )
 })
