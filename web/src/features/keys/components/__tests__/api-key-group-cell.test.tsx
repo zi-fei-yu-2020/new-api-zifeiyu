@@ -133,7 +133,12 @@ describe('API key group table cell', () => {
     )
     expect(screen.queryByText('1x')).not.toBeInTheDocument()
     await userEvent.tab()
-    expect(await screen.findByText('Follow user group')).toBeVisible()
+    const tooltip = await screen.findByText('Follow user group')
+    expect(tooltip).toBeVisible()
+    expect(tooltip.closest('[data-slot="tooltip-content"]')).toHaveClass(
+      'bg-popover',
+      'text-popover-foreground'
+    )
   })
 
   test('keeps a long group name and exact multiplier available through keyboard focus', async () => {
@@ -144,11 +149,11 @@ describe('API key group table cell', () => {
     ).toHaveClass('max-w-50')
     expect(screen.getByText('12.345678x')).toBeInTheDocument()
     await userEvent.tab()
-    expect(
-      await screen.findByText(groupName, {
-        selector: '[data-slot="tooltip-content"]',
-      })
-    ).toBeVisible()
+    const tooltip = await screen.findByText(groupName, {
+      selector: '[data-slot="tooltip-content"]',
+    })
+    expect(tooltip).toBeVisible()
+    expect(tooltip).toHaveClass('bg-popover', 'text-popover-foreground')
   })
 
   test('never turns a string-valued normal group ratio into an automatic multiplier', () => {

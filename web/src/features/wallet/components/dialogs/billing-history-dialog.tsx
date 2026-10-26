@@ -103,13 +103,16 @@ export function BillingHistoryDialog({
         description={t(
           'View your topup transaction records and payment history'
         )}
-        contentClassName='flex max-h-(--dialog-available-height) flex-col max-sm:w-screen max-sm:max-w-none max-sm:rounded-none max-sm:p-4 sm:max-w-4xl'
-        contentHeight='auto'
-        bodyClassName='space-y-3'
+        contentClassName='flex max-h-(--dialog-available-height) flex-col max-sm:h-[calc(100dvh-1rem)] max-sm:max-h-none max-sm:w-screen max-sm:max-w-none max-sm:rounded-none max-sm:p-4 sm:max-w-4xl'
+        contentHeight='100%'
+        bodyClassName='flex min-h-0 flex-1 flex-col gap-3'
       >
         <div className='min-h-0 space-y-3'>
           {/* Search and Filter Bar */}
-          <div className='flex items-center gap-2'>
+          <div
+            data-testid='billing-history-filters'
+            className='flex flex-col gap-2 sm:flex-row sm:items-center'
+          >
             <div className='relative flex-1'>
               <Search className='text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2' />
               <Input
@@ -131,7 +134,7 @@ export function BillingHistoryDialog({
                 value !== null && handlePageSizeChange(Number.parseInt(value))
               }
             >
-              <SelectTrigger className='h-9 w-[92px] sm:w-32'>
+              <SelectTrigger className='h-9 w-full sm:w-32'>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent alignItemWithTrigger={false}>
@@ -146,7 +149,10 @@ export function BillingHistoryDialog({
           </div>
 
           {/* Records List */}
-          <div className='max-h-[min(54vh,520px)] overflow-y-auto pr-1'>
+          <div
+            data-testid='billing-history-list'
+            className='min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 sm:max-h-[min(54vh,520px)]'
+          >
             {loading && (
               <div className='space-y-3'>
                 {['first', 'second', 'third', 'fourth', 'fifth'].map(

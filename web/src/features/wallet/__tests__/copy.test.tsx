@@ -73,6 +73,41 @@ it('translates billing history statuses and updates them when the language chang
   }
 })
 
+it('keeps billing history controls and records in a viewport-safe mobile layout', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        total: 1,
+        items: [
+          {
+            id: 1,
+            status: 'success',
+            amount: 10,
+            money: 10,
+            trade_no: 'mobile-order',
+            payment_method: 'stripe',
+            create_time: 1,
+          },
+        ],
+      },
+    },
+  })
+  render(
+    <I18nextProvider i18n={i18n}>
+      <BillingHistoryDialog open onOpenChange={vi.fn()} />
+    </I18nextProvider>
+  )
+  const dialog = await screen.findByRole('dialog')
+  expect(dialog).toHaveClass('max-sm:h-[calc(100dvh-1rem)]')
+  expect(screen.getByTestId('billing-history-filters')).toHaveClass('flex-col')
+  expect(screen.getByTestId('billing-history-list')).toHaveClass(
+    'min-h-0',
+    'flex-1',
+    'overflow-y-auto'
+  )
+})
+
 it.each([
   { priceRatio: 7.3, paid: '584', saved: '146', full: '146' },
   { priceRatio: 0.000123, paid: '0.0098', saved: '0.0025', full: '0.0025' },
