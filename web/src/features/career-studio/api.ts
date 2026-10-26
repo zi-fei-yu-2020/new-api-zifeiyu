@@ -282,3 +282,58 @@ export async function chatWithCoach(
   )
   return text.trim()
 }
+
+export type SpeechRequest = {
+  model: string
+  group: string
+  input: string
+  voice: string
+  speed: number
+}
+
+// An error body arrives as a Blob because the request asks for audio.
+async function speechError(body: Blob, cause: unknown): Promise<Error> {
+  const text = await body.text().catch(() => '')
+  try {
+    return createServerError(
+      JSON.parse(text),
+      'The voice service returned no audio.'
+    )
+  } catch {
+    return createServerError(cause, 'The voice service returned no audio.')
+  }
+}
+
+// Same no-replay settings as complete(): a billed call is never retried.
+export async function synthesizeSpeech(
+  input: SpeechRequest,
+  signal?: AbortSignal
+): Promise<Blob> {
+  await getFreshAuthHeaders()
+  signal?.throwIfAborted()
+  let response: { data: Blob }
+  try {
+    response = await api.post<Blob>(
+      '/pg/audio/speech',
+      { ...input, response_format: 'mp3' },
+      {
+        responseType: 'blob',
+        signal,
+        timeout: 60_000,
+        skipAuthRefresh: true,
+        skipErrorHandler: true,
+        skipBusinessError: true,
+      }
+    )
+  } catch (error) {
+    const data = (error as { response?: { data?: unknown } }).response?.data
+    if (data instanceof Blob) throw await speechError(data, error)
+    throw error
+  }
+  const blob = response.data
+  if (!(blob instanceof Blob) || !blob.size) {
+    throw new Error('The voice service returned no audio.')
+  }
+  if (!blob.type.startsWith('audio/')) throw await speechError(blob, blob)
+  return blob
+}

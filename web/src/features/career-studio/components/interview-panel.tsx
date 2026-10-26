@@ -25,15 +25,18 @@ import { Textarea } from '@/components/ui/textarea'
 
 import { createInterview, reviewAnswer } from '../api'
 import { useCareerWorkspace, type CareerModelState } from '../hooks/use-career'
+import type { CareerTtsState } from '../hooks/use-career-tts'
 import { useCoachAction } from '../hooks/use-coach-action'
 import type { InterviewFeedback, InterviewQuestion } from '../types'
 import { CoachRun, ListBlock } from './coach-run'
+import { SpeakButton } from './speak-button'
 
 type QuestionCardProps = {
   index: number
   question: InterviewQuestion
   role: string
   modelState: CareerModelState
+  ttsState: CareerTtsState
 }
 
 function QuestionCard(props: QuestionCardProps) {
@@ -44,9 +47,17 @@ function QuestionCard(props: QuestionCardProps) {
   const id = `career-answer-${props.index}`
   return (
     <li className='space-y-2 border border-black p-3'>
-      <p className='font-medium'>
-        {props.index + 1}. {props.question.question}
-      </p>
+      <div className='flex items-start justify-between gap-2'>
+        <p className='font-medium'>
+          {props.index + 1}. {props.question.question}
+        </p>
+        <SpeakButton
+          tts={props.ttsState}
+          id={`${id}-question`}
+          text={props.question.question}
+          label='Read question aloud'
+        />
+      </div>
       {(props.question.intent || props.question.tip) && (
         <p className='text-muted-foreground text-xs'>
           {[props.question.intent, props.question.tip]
@@ -95,7 +106,15 @@ function QuestionCard(props: QuestionCardProps) {
           />
           {feedback.betterAnswer && (
             <div>
-              <h4 className='font-semibold'>{t('Improved answer')}</h4>
+              <div className='flex items-center justify-between gap-2'>
+                <h4 className='font-semibold'>{t('Improved answer')}</h4>
+                <SpeakButton
+                  tts={props.ttsState}
+                  id={`${id}-better`}
+                  text={feedback.betterAnswer}
+                  label='Read improved answer'
+                />
+              </div>
               <p className='whitespace-pre-wrap'>{feedback.betterAnswer}</p>
             </div>
           )}
@@ -112,7 +131,10 @@ function QuestionCard(props: QuestionCardProps) {
   )
 }
 
-type InterviewPanelProps = { modelState: CareerModelState }
+type InterviewPanelProps = {
+  modelState: CareerModelState
+  ttsState: CareerTtsState
+}
 
 export function InterviewPanel(props: InterviewPanelProps) {
   const { t } = useTranslation()
@@ -177,6 +199,7 @@ export function InterviewPanel(props: InterviewPanelProps) {
               question={question}
               role={role}
               modelState={props.modelState}
+              ttsState={props.ttsState}
             />
           ))}
         </ol>

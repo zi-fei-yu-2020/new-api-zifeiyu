@@ -30,8 +30,15 @@ type ModelFieldProps = { state: CareerModelState; disabled?: boolean }
 export function CareerModelField(props: ModelFieldProps) {
   const { t } = useTranslation()
   const query = props.state.modelsQuery
-  let help: ReactNode = t(
-    'AI features use your own models and are billed to your wallet like the Playground.'
+  let help: ReactNode = (
+    <>
+      <span>
+        {t(
+          'AI features use your own models and are billed to your wallet like the Playground.'
+        )}
+      </span>{' '}
+      <span>{t('Your choice is remembered on this browser.')}</span>
+    </>
   )
   if (query.isError) {
     help = (

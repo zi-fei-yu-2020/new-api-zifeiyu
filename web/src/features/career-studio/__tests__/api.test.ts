@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { checkRecruitment, matchJobDescription } from '../api'
+import { checkRecruitment, matchJobDescription, synthesizeSpeech } from '../api'
 import { MALFORMED_RESPONSE } from '../lib/structured'
 
 const target = {
@@ -120,5 +120,70 @@ describe('career coach relay', () => {
     )
     const result = await checkRecruitment(target, '入职前需缴纳押金 500 元')
     expect(result.risk).toBe('high')
+  })
+})
+
+describe('career speech relay', () => {
+  const speech = {
+    model: 'speech-02-turbo',
+    group: 'campus',
+    input: '你好',
+    voice: 'female-shaonv',
+    speed: 1,
+  }
+  const jsonBlob = (body: unknown) =>
+    new Blob([JSON.stringify(body)], { type: 'application/json' })
+
+  it('posts the speech request as mp3 and returns the audio blob without auth replay', async () => {
+    const audio = new Blob(['ID3'], { type: 'audio/mpeg' })
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: audio })
+    const result = await synthesizeSpeech(speech)
+    expect(post).toHaveBeenCalledWith(
+      '/pg/audio/speech',
+      { ...speech, response_format: 'mp3' },
+      expect.objectContaining({
+        responseType: 'blob',
+        skipAuthRefresh: true,
+      })
+    )
+    expect(result).toBe(audio)
+  })
+
+  it('throws the server message when a 200 response carries a JSON error', async () => {
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: jsonBlob({ error: { message: 'Insufficient balance' } }),
+    })
+    await expect(synthesizeSpeech(speech)).rejects.toThrow(
+      'Insufficient balance'
+    )
+  })
+
+  it('throws the server message when a rejected request has a Blob error body', async () => {
+    vi.spyOn(api, 'post').mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 403'), {
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: jsonBlob({
+            error: {
+              message:
+                'This voice model is not available in your current group.',
+            },
+          }),
+        },
+      })
+    )
+    await expect(synthesizeSpeech(speech)).rejects.toThrow(
+      'This voice model is not available in your current group.'
+    )
+  })
+
+  it('rejects an empty audio response', async () => {
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: new Blob([], { type: 'audio/mpeg' }),
+    })
+    await expect(synthesizeSpeech(speech)).rejects.toThrow(
+      'The voice service returned no audio.'
+    )
   })
 })

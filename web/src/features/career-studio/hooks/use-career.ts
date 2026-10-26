@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { getUserModels } from '@/features/playground/api'
@@ -31,6 +30,7 @@ import {
 } from '@/stores/career-studio-store'
 
 import type { CareerModel } from '../api'
+import { isSpeechModel } from '../lib/tts'
 
 export function useCareerWorkspace() {
   const userId = String(useAuthStore((state) => state.auth.user?.id ?? ''))
@@ -54,18 +54,24 @@ export function useCareerModel() {
   const { i18n } = useTranslation()
   const user = useAuthStore((state) => state.auth.user)
   const group = user?.group ?? ''
-  const [selected, setSelected] = useState('')
+  const userId = String(user?.id ?? '')
+  const saved = useCareerStudioStore(
+    (state) => state.preferences[userId]?.coachModel
+  )
+  const setPreference = useCareerStudioStore((state) => state.setPreference)
   const modelsQuery = useQuery({
     queryKey: ['career-studio-models', user?.id, group],
     queryFn: () => getUserModels(group),
     enabled: !!user?.id && !!group,
     meta: { errorToast: false },
   })
-  const models = modelsQuery.data ?? []
+  const allModels = modelsQuery.data ?? []
+  const models = allModels.filter((item) => !isSpeechModel(item.value))
+  const speechModels = allModels.filter((item) => isSpeechModel(item.value))
+  // A saved model missing from the current group is ignored, not overwritten:
+  // only an explicit choice is stored.
   const model =
-    models.find((item) => item.value === selected)?.value ??
-    models[0]?.value ??
-    ''
+    models.find((item) => item.value === saved)?.value ?? models[0]?.value ?? ''
   const target: CareerModel | null =
     model && group
       ? {
@@ -99,9 +105,10 @@ export function useCareerModel() {
     modelsQuery,
     models,
     model,
-    setModel: setSelected,
+    setModel: (value: string) => setPreference(userId, { coachModel: value }),
     target,
     refreshBalance,
+    speechModels,
   }
 }
 

@@ -21,15 +21,19 @@ import { useTranslation } from 'react-i18next'
 
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { cn } from '@/lib/utils'
 
 import { chatWithCoach } from '../api'
 import { useCareerWorkspace, type CareerModelState } from '../hooks/use-career'
+import type { CareerTtsState } from '../hooks/use-career-tts'
 import { useCoachAction } from '../hooks/use-coach-action'
 import type { ChatEntry } from '../types'
 import { CoachRun } from './coach-run'
+import { SpeakButton } from './speak-button'
 
-type ChatPanelProps = { modelState: CareerModelState }
+type ChatPanelProps = {
+  modelState: CareerModelState
+  ttsState: CareerTtsState
+}
 
 // Conversations stay in memory only; venting should not be persisted by default.
 export function ChatPanel(props: ChatPanelProps) {
@@ -83,19 +87,30 @@ export function ChatPanel(props: ChatPanelProps) {
             {t('Hi, I am your job-search buddy. How are you doing today?')}
           </p>
         )}
-        {messages.map((message) => (
-          <p
-            key={message.id}
-            className={cn(
-              'max-w-[85%] px-3 py-2 text-sm whitespace-pre-wrap',
-              message.role === 'user'
-                ? 'ml-auto bg-black text-white'
-                : 'bg-neutral-100'
-            )}
-          >
-            {message.content}
-          </p>
-        ))}
+        {messages.map((message) =>
+          message.role === 'user' ? (
+            <p
+              key={message.id}
+              className='ml-auto max-w-[85%] bg-black px-3 py-2 text-sm whitespace-pre-wrap text-white'
+            >
+              {message.content}
+            </p>
+          ) : (
+            <div
+              key={message.id}
+              className='flex max-w-[85%] items-start gap-1 bg-neutral-100 px-3 py-2'
+            >
+              <p className='min-w-0 flex-1 text-sm whitespace-pre-wrap'>
+                {message.content}
+              </p>
+              <SpeakButton
+                tts={props.ttsState}
+                id={`career-chat-${message.id}`}
+                text={message.content}
+              />
+            </div>
+          )
+        )}
       </div>
       <Label htmlFor='career-chat-input' className='sr-only'>
         {t('Message')}

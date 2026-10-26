@@ -75,6 +75,11 @@ func SetRelayRouter(router *gin.Engine) {
 		controller.PrepareImageStudio, middleware.ModelRequestRateLimit(),
 		middleware.PinTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(), controller.ImageStudio,
 	)
+	router.POST("/pg/audio/speech",
+		middleware.RouteTag("relay"), middleware.SystemPerformanceCheck(), middleware.UserAuth(),
+		controller.PrepareCareerSpeech, middleware.ModelRequestRateLimit(),
+		middleware.Distribute(), controller.CareerSpeech,
+	)
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RouteTag("relay"))
 	relayV1Router.Use(middleware.SystemPerformanceCheck())

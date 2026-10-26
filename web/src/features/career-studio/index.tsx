@@ -32,7 +32,9 @@ import { ProfilePanel } from './components/profile-panel'
 import { ReviewPanel } from './components/review-panel'
 import { TodayPanel } from './components/today-panel'
 import { ToolsPanel } from './components/tools-panel'
+import { CareerVoiceField } from './components/voice-field'
 import { useCareerModel } from './hooks/use-career'
+import { useCareerTts } from './hooks/use-career-tts'
 
 const TABS = [
   { value: 'today', label: 'Today' },
@@ -55,6 +57,7 @@ export function CareerStudio() {
 function CareerWorkspaceView() {
   const { t } = useTranslation()
   const modelState = useCareerModel()
+  const ttsState = useCareerTts(modelState)
   const [tab, setTab] = useState<CareerTab>('today')
   const [jd, setJd] = useState('')
   const [reviewCompany, setReviewCompany] = useState('')
@@ -81,11 +84,19 @@ function CareerWorkspaceView() {
         </div>
       </header>
 
-      <div className='max-w-md'>
+      <div className='grid gap-4 sm:grid-cols-2'>
         <CareerModelField state={modelState} />
+        <CareerVoiceField tts={ttsState} />
       </div>
 
-      <Tabs value={tab} onValueChange={(value) => setTab(value as CareerTab)}>
+      <Tabs
+        value={tab}
+        onValueChange={(value) => {
+          // Reading aloud belongs to the visible tab.
+          ttsState.stop()
+          setTab(value as CareerTab)
+        }}
+      >
         <TabsList className='h-auto flex-wrap'>
           {TABS.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
@@ -112,17 +123,18 @@ function CareerWorkspaceView() {
           <JdPanel modelState={modelState} jd={jd} onJdChange={setJd} />
         </TabsContent>
         <TabsContent value='interview' className='pt-4'>
-          <InterviewPanel modelState={modelState} />
+          <InterviewPanel modelState={modelState} ttsState={ttsState} />
         </TabsContent>
         <TabsContent value='review' className='pt-4'>
           <ReviewPanel
             modelState={modelState}
+            ttsState={ttsState}
             company={reviewCompany}
             onCompanyChange={setReviewCompany}
           />
         </TabsContent>
         <TabsContent value='chat' className='pt-4'>
-          <ChatPanel modelState={modelState} />
+          <ChatPanel modelState={modelState} ttsState={ttsState} />
         </TabsContent>
         <TabsContent value='tools' className='pt-4'>
           <ToolsPanel modelState={modelState} />

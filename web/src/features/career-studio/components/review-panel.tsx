@@ -26,15 +26,29 @@ import { useCareerStudioStore } from '@/stores/career-studio-store'
 
 import { debriefRejection } from '../api'
 import { useCareerWorkspace, type CareerModelState } from '../hooks/use-career'
+import type { CareerTtsState } from '../hooks/use-career-tts'
 import { useCoachAction } from '../hooks/use-coach-action'
 import type { ReviewResult } from '../types'
 import { CoachRun, ListBlock } from './coach-run'
+import { SpeakButton } from './speak-button'
 
-function ReviewView(props: { result: ReviewResult }) {
+type ReviewViewProps = {
+  id: string
+  result: ReviewResult
+  ttsState: CareerTtsState
+}
+
+function ReviewView(props: ReviewViewProps) {
   const { t } = useTranslation()
+  const spoken = [props.result.empathy, props.result.reframe]
+    .filter(Boolean)
+    .join('\n')
   return (
     <div className='space-y-3 text-sm'>
-      <p>{props.result.empathy}</p>
+      <div className='flex items-start justify-between gap-2'>
+        <p>{props.result.empathy}</p>
+        <SpeakButton tts={props.ttsState} id={props.id} text={spoken} />
+      </div>
       <p>
         <span className='font-semibold'>{t('A fairer way to say it:')}</span>{' '}
         {props.result.reframe}
@@ -57,6 +71,7 @@ function ReviewView(props: { result: ReviewResult }) {
 
 type ReviewPanelProps = {
   modelState: CareerModelState
+  ttsState: CareerTtsState
   company: string
   onCompanyChange: (company: string) => void
 }
@@ -136,7 +151,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
           className='border border-black p-4'
           aria-label={t('Debrief result')}
         >
-          <ReviewView result={result} />
+          <ReviewView
+            id='career-review-current'
+            result={result}
+            ttsState={props.ttsState}
+          />
         </article>
       )}
       {workspace.reviews.length > 0 && (
@@ -154,7 +173,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
               <p className='text-muted-foreground my-2 text-sm whitespace-pre-wrap'>
                 {review.content}
               </p>
-              <ReviewView result={review.result} />
+              <ReviewView
+                id={`career-review-${review.id}`}
+                result={review.result}
+                ttsState={props.ttsState}
+              />
             </details>
           ))}
         </section>

@@ -45,10 +45,23 @@ export function emptyCareerWorkspace(): CareerWorkspace {
   }
 }
 
+// Device-local tool choices. They are not personal data, so clearing the
+// workspace keeps them.
+type CareerPreferences = {
+  coachModel?: string
+  ttsEngine?: 'browser' | 'model'
+  ttsModel?: string
+  ttsVoice?: string
+  browserVoiceURI?: string
+  ttsRate?: number
+}
+
 type CareerStudioState = {
   // Keyed by user id so accounts sharing a browser never see each other's data.
   workspaces: Record<string, CareerWorkspace>
   completedDays: Record<string, string[]>
+  preferences: Record<string, CareerPreferences>
+  setPreference: (userId: string, patch: Partial<CareerPreferences>) => void
   saveProfile: (userId: string, profile: CareerProfile) => void
   saveApplication: (userId: string, application: CareerApplication) => void
   removeApplication: (userId: string, id: string) => void
@@ -77,6 +90,14 @@ export const useCareerStudioStore = create<CareerStudioState>()(
     (set) => ({
       workspaces: {},
       completedDays: {},
+      preferences: {},
+      setPreference: (userId, patch) =>
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [userId]: { ...state.preferences[userId], ...patch },
+          },
+        })),
       saveProfile: (userId, profile) =>
         set((state) => update(state, userId, () => ({ profile }))),
       saveApplication: (userId, application) =>
@@ -137,10 +158,14 @@ export const useCareerStudioStore = create<CareerStudioState>()(
     }),
     {
       name: 'career-studio',
+      // Adding a key needs no version bump: the shallow merge keeps the
+      // default `preferences` for older storage, while a bump without a
+      // migration would discard saved workspaces.
       version: 1,
       partialize: (state) => ({
         workspaces: state.workspaces,
         completedDays: state.completedDays,
+        preferences: state.preferences,
       }),
     }
   )
