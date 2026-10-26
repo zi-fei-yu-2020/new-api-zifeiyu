@@ -18,10 +18,15 @@ import (
 
 func OpenAIChatRequestToGeminiGenerateContent(c context.Context, textRequest dto.GeneralOpenAIRequest, info convmeta.Meta) (*dto.GeminiChatRequest, error) {
 	opts := convmeta.OptionsOf(info)
+	imageConfig := textRequest.ImageConfig
+	if len(imageConfig) == 0 {
+		imageConfig = textRequest.ImageConfigSnake
+	}
 	geminiRequest := dto.GeminiChatRequest{
 		Contents: make([]dto.GeminiChatContent, 0, len(textRequest.Messages)),
 		GenerationConfig: dto.GeminiChatGenerationConfig{
 			Temperature: textRequest.Temperature,
+			ImageConfig: imageConfig,
 		},
 	}
 
@@ -189,14 +194,11 @@ func OpenAIChatRequestToGeminiGenerateContent(c context.Context, textRequest dto
 	if textRequest.Tools != nil {
 		functions := make([]dto.FunctionRequest, 0, len(textRequest.Tools))
 		for _, tool := range textRequest.Tools {
-			if tool.Function.Parameters != nil {
-				if params, ok := tool.Function.Parameters.(map[string]any); ok {
-					if props, hasProps := params["properties"].(map[string]any); hasProps && len(props) == 0 {
-						tool.Function.Parameters = nil
-					}
-				}
+			parameters, err := sharedgemini.CleanFunctionParametersJSON(tool.Function.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tool parameters: %w", err)
 			}
-			tool.Function.Parameters = sharedgemini.CleanFunctionParameters(tool.Function.Parameters)
+			tool.Function.Parameters = parameters
 			functions = append(functions, tool.Function)
 		}
 		geminiTools := geminiRequest.GetTools()

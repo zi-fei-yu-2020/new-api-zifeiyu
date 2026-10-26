@@ -1,4 +1,4 @@
-/*
+﻿/*
 Copyright (C) 2023-2026 QuantumNous
 
 This program is free software: you can redistribute it and/or modify
@@ -64,6 +64,8 @@ const LOG_STAT_CARD_FALLBACK_KEYS = [
   'count',
   'quota',
   'tokens',
+  'cache-read',
+  'cache-creation',
   'average-rpm',
   'average-tpm',
 ] as const
@@ -116,12 +118,12 @@ const LazyFlowCharts = lazy(() =>
 function LogStatCardsFallback() {
   return (
     <div className='overflow-hidden rounded-none border border-black bg-white'>
-      <div className='grid grid-cols-2 divide-x divide-black/15 sm:grid-cols-3 lg:grid-cols-5'>
+      <div className='grid min-w-0 grid-cols-2 divide-x divide-black/15 sm:grid-cols-3 lg:grid-cols-7'>
         {LOG_STAT_CARD_FALLBACK_KEYS.map((key, index) => (
           <div
             key={key}
             className={cn(
-              'px-2.5 py-1.5 sm:px-5 sm:py-4',
+              'min-w-0 px-2.5 py-1.5 sm:px-3 sm:py-4 xl:px-4',
               index === LOG_STAT_CARD_FALLBACK_KEYS.length - 1 &&
                 'col-span-2 sm:col-span-1'
             )}
@@ -135,6 +137,9 @@ function LogStatCardsFallback() {
           </div>
         ))}
       </div>
+      <div className='border-t px-3 py-2'>
+        <Skeleton className='h-4 w-full max-w-md' />
+      </div>
     </div>
   )
 }
@@ -142,12 +147,12 @@ function LogStatCardsFallback() {
 function ModelChartsFallback() {
   return (
     <div className='overflow-hidden rounded-none border border-black bg-white'>
-      <div className='flex items-center justify-between border-b border-black px-4 py-3 sm:px-5'>
-        <Skeleton className='h-5 w-32 rounded-none' />
-        <Skeleton className='h-8 w-72 rounded-none' />
+      <div className='flex items-center justify-between border-b px-4 py-3 sm:px-5'>
+        <Skeleton className='h-5 w-32' />
+        <Skeleton className='h-8 w-72' />
       </div>
       <div className='h-96 p-2'>
-        <Skeleton className='h-full w-full rounded-none' />
+        <Skeleton className='h-full w-full' />
       </div>
     </div>
   )
@@ -158,17 +163,17 @@ function PerformanceOverviewFallback() {
     <div className='overflow-hidden rounded-none border border-black bg-white'>
       <div className='flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 sm:px-5'>
         <div className='flex items-center gap-2'>
-          <Skeleton className='h-4 w-24 rounded-none' />
+          <Skeleton className='h-4 w-24' />
         </div>
         {PERFORMANCE_METRIC_FALLBACK_KEYS.map((key) => (
           <div key={key} className='flex items-center gap-1.5'>
-            <Skeleton className='h-3 w-14 rounded-none' />
+            <Skeleton className='h-3 w-14' />
             <Skeleton className='h-4 w-16 rounded-none' />
           </div>
         ))}
         <div className='ml-auto flex items-center gap-2'>
           {PERFORMANCE_MODEL_FALLBACK_KEYS.map((key) => (
-            <Skeleton key={key} className='h-5 w-28 rounded-none' />
+            <Skeleton key={key} className='h-5 w-28 rounded-full' />
           ))}
         </div>
       </div>
@@ -285,7 +290,7 @@ export function Dashboard() {
           <TooltipTrigger
             render={
               <Button
-                variant='outline'
+                variant='ghost'
                 size='icon'
                 onClick={() => setFlowSensitiveVisible((prev) => !prev)}
                 aria-label={
@@ -293,17 +298,13 @@ export function Dashboard() {
                     ? t('Hide sensitive data')
                     : t('Show sensitive data')
                 }
-                className='size-8 rounded-none border border-black bg-white text-black transition-none hover:bg-black hover:text-white'
+                className='text-muted-foreground hover:text-foreground size-8'
               />
             }
           >
-            {flowSensitiveVisible ? (
-              <Eye className='size-4' />
-            ) : (
-              <EyeOff className='size-4' />
-            )}
+            {flowSensitiveVisible ? <Eye /> : <EyeOff />}
           </TooltipTrigger>
-          <TooltipContent className='rounded-none border border-black bg-black font-mono text-xs text-white'>
+          <TooltipContent>
             {flowSensitiveVisible
               ? t('Hide sensitive data')
               : t('Show sensitive data')}
@@ -333,13 +334,9 @@ export function Dashboard() {
           <div className='flex flex-wrap items-center justify-between gap-1.5 sm:gap-2'>
             {showSectionTabs ? (
               <Tabs value={activeSection} onValueChange={handleSectionChange}>
-                <TabsList className='max-w-full flex-wrap justify-start rounded-none border border-black bg-white p-0.5 group-data-horizontal/tabs:h-auto'>
+                <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
                   {visibleSections.map((section) => (
-                    <TabsTrigger
-                      key={section}
-                      value={section}
-                      className='px-3.5 text-xs'
-                    >
+                    <TabsTrigger key={section} value={section}>
                       {t(SECTION_META[section].titleKey)}
                     </TabsTrigger>
                   ))}
