@@ -37,3 +37,15 @@ func TestValuesTypedNilMetaIsSafe(t *testing.T) {
 	assert.Empty(t, UpstreamModelName(meta))
 	assert.Zero(t, ChannelTypeOf(meta))
 }
+
+func TestGeminiOptionsSupportsProviderQualifiedImageModel(t *testing.T) {
+	options := GeminiOptions{
+		SupportsImagine: func(modelName string) bool {
+			return modelName == "gemini-3.1-flash-image"
+		},
+	}
+
+	assert.True(t, options.SupportsImagineModel("gemini-3.1-flash-image"))
+	assert.True(t, options.SupportsImagineModel("antigravity/gemini-3.1-flash-image"))
+	assert.False(t, options.SupportsImagineModel("antigravity/gemini-3-flash"))
+}

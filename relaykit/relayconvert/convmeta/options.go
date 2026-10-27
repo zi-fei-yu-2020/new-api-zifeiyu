@@ -1,6 +1,10 @@
 package convmeta
 
-import "github.com/QuantumNous/new-api/relaykit/types"
+import (
+	"strings"
+
+	"github.com/QuantumNous/new-api/relaykit/types"
+)
 
 // Options is the per-request snapshot of host configuration that converters
 // consult. The host fills it from its settings system when constructing the
@@ -102,7 +106,19 @@ func (o *ClaudeOptions) DefaultMaxTokensFor(modelName string) (int, bool) {
 }
 
 func (o *GeminiOptions) SupportsImagineModel(modelName string) bool {
-	return o != nil && o.SupportsImagine != nil && o.SupportsImagine(modelName)
+	if o == nil || o.SupportsImagine == nil {
+		return false
+	}
+	if o.SupportsImagine(modelName) {
+		return true
+	}
+	// Channel mappings may expose a provider-qualified model such as
+	// "antigravity/gemini-3.1-flash-image", while the Gemini capability
+	// catalog stores the model name without the provider prefix.
+	if index := strings.LastIndexByte(modelName, '/'); index >= 0 {
+		return o.SupportsImagine(modelName[index+1:])
+	}
+	return false
 }
 
 func (o *GeminiOptions) SupportsJSONSchemaModel(modelName string) bool {

@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,9 +42,33 @@ func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
 }
 
 func GetGroupEnabledModels(group string) []string {
-	var models []string
-	// Find distinct models
-	DB.Table("abilities").Where(commonGroupCol+" = ? and enabled = ?", group, true).Distinct("model").Pluck("model", &models)
+	type abilityModelRow struct {
+		Model         string
+		ChannelModels string
+	}
+	var rows []abilityModelRow
+	DB.Table("abilities").
+		Select("abilities.model, channels.models as channel_models").
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities."+commonGroupCol+" = ? AND abilities.enabled = ? AND channels.status = ?", group, true, common.ChannelStatusEnabled).
+		Scan(&rows)
+
+	models := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		channelModels := strings.Split(row.ChannelModels, ",")
+		for i := range channelModels {
+			channelModels[i] = strings.TrimSpace(channelModels[i])
+		}
+		if !slices.Contains(channelModels, row.Model) {
+			continue
+		}
+		if _, ok := seen[row.Model]; ok {
+			continue
+		}
+		seen[row.Model] = struct{}{}
+		models = append(models, row.Model)
+	}
 	return models
 }
 
