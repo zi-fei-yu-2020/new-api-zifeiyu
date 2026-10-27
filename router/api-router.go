@@ -154,6 +154,17 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/game/settings", middleware.RootAuth(), middleware.DisableCache(), controller.GetGameSettings)
 				selfRoute.PUT("/game/settings", middleware.RootAuth(), controller.UpdateGameSettings)
 
+				// 1v1 PvP duels share the authenticated user boundary of the daily game.
+				selfRoute.GET("/game/pvp/status", middleware.DisableCache(), controller.GetPvPStatus)
+				selfRoute.POST("/game/pvp/queue", middleware.UserCriticalRateLimit("pvp-queue"), controller.JoinPvPQueue)
+				selfRoute.DELETE("/game/pvp/queue", controller.LeavePvPQueue)
+				selfRoute.GET("/game/pvp/match", middleware.DisableCache(), controller.GetPvPMatch)
+				selfRoute.POST("/game/pvp/input", controller.SubmitPvPInput)
+				selfRoute.POST("/game/pvp/friendly/create", middleware.UserCriticalRateLimit("pvp-friendly"), controller.CreatePvPFriendly)
+				selfRoute.POST("/game/pvp/friendly/join", middleware.UserCriticalRateLimit("pvp-friendly"), controller.JoinPvPFriendly)
+				selfRoute.GET("/game/pvp/matches", middleware.DisableCache(), controller.ListPvPMatches)
+				selfRoute.GET("/game/pvp/matches/:id/replay", middleware.DisableCache(), controller.GetPvPReplay)
+
 				// Check-in routes
 				selfRoute.GET("/checkin", controller.GetCheckinStatus)
 				selfRoute.POST("/checkin", middleware.TurnstileCheck(), controller.DoCheckin)

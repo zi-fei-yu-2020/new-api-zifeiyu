@@ -33,6 +33,9 @@ export type GameSettings = {
   reward_version: number
   first_token_quota: number
   subsequent_token_quota: number
+  pvp_enabled?: boolean
+  pvp_min_stake?: number
+  pvp_max_stake?: number
 }
 export type GameRun = {
   id: string
