@@ -26,10 +26,21 @@ function readStructuredResponse(
   arrayKey?: 'regions'
 ): Record<string, unknown> {
   try {
-    const content = text
+    let content = text
       .trim()
       .replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, '$1')
-    const value: unknown = JSON.parse(content)
+    let value: unknown
+    try {
+      value = JSON.parse(content)
+    } catch {
+      // Some otherwise capable models add a short sentence before/after the
+      // JSON object. Extract the outermost JSON value before rejecting it.
+      const start = content.indexOf('{')
+      const end = content.lastIndexOf('}')
+      if (start < 0 || end <= start) throw new Error()
+      content = content.slice(start, end + 1)
+      value = JSON.parse(content)
+    }
     if (Array.isArray(value) && arrayKey) return { [arrayKey]: value }
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error()

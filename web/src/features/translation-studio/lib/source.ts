@@ -25,7 +25,9 @@ import type {
 import { groupTranslationSegments, readDocx } from './docx'
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024
-export const MAX_SOURCE_CHARACTERS = 60_000
+// Keep the limit above the largest supported 20-page technical PDF while
+// leaving enough headroom for the structured translation batches.
+export const MAX_SOURCE_CHARACTERS = 100_000
 export const MAX_PDF_PAGES = 20
 const CHUNK_CHARACTERS = 4_000
 
@@ -34,7 +36,7 @@ export function splitTranslationText(text: string): TranslationUnit[] {
   if (!normalized) throw new Error('No readable text was found in this file.')
   if (normalized.length > MAX_SOURCE_CHARACTERS) {
     throw new Error(
-      'The source exceeds the 60,000 character limit. Split it into smaller files.'
+      'The source exceeds the 100,000 character limit. Split it into smaller files.'
     )
   }
   const units: TranslationUnit[] = []
@@ -216,32 +218,19 @@ export async function readTranslationFile(
           'The scanned pages are too large. Split the PDF into smaller files.'
         )
       }
-      const operations = await page.getOperatorList()
-      signal.throwIfAborted()
-      // A digital heading does not mean the rest of the page is searchable.
-      // Send mixed pages as a whole image so text inside scans/figures is included.
-      const imageOperations = new Set([
-        pdfjs.OPS.paintImageXObject,
-        pdfjs.OPS.paintInlineImageXObject,
-        pdfjs.OPS.paintImageMaskXObject,
-        pdfjs.OPS.paintImageXObjectRepeat,
-        pdfjs.OPS.paintInlineImageXObjectGroup,
-        pdfjs.OPS.paintImageMaskXObjectGroup,
-        pdfjs.OPS.paintImageMaskXObjectRepeat,
-      ])
-      const hasImages = operations.fnArray.some((operation) =>
-        imageOperations.has(operation)
-      )
+      // Embedded images are common in technical PDFs (logos, diagrams and
+      // cover art). Keep pages with a searchable text layer on the structured
+      // path; only image-only pages need a vision model.
       const regions: TranslationRegion[] = []
       if (text.length > 0) {
         textPages.push(text)
         if (textPages.join('\n').length > MAX_SOURCE_CHARACTERS) {
           throw new Error(
-            'The source exceeds the 60,000 character limit. Split it into smaller files.'
+            'The source exceeds the 100,000 character limit. Split it into smaller files.'
           )
         }
       }
-      if (text.length > 0 && !hasImages) {
+      if (text.length > 0) {
         for (const item of content.items) {
           if (!('str' in item) || !item.str.trim()) continue
           const m = pdfjs.Util.transform(viewport.transform, item.transform)

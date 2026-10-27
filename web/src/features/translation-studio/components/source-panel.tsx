@@ -87,7 +87,7 @@ export function TranslationSourcePanel(props: Props) {
   }
   let footnote =
     props.mode === 'text'
-      ? t('Up to 60,000 characters. Long content is translated in sections.')
+      ? t('Up to 100,000 characters. Long content is translated in sections.')
       : t(
           'Files are read locally and sent to the selected model only when you translate.'
         )

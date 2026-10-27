@@ -28,7 +28,7 @@ const WORD_NAMESPACES = [
 ]
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 const MAX_XML_BYTES = 8 * 1024 * 1024
-const MAX_CHARACTERS = 60_000
+const MAX_CHARACTERS = 100_000
 
 function parseWordXml(bytes: Uint8Array): Document {
   let xml: string
@@ -65,7 +65,9 @@ export function groupTranslationSegments(
   for (const segment of segments) {
     if (
       batch.length &&
-      (length + segment.text.length > 2500 || batch.length >= 48)
+      // Keep structured JSON batches small enough for compact models to return
+      // every segment id without truncating or dropping entries.
+      (length + segment.text.length > 1200 || batch.length >= 20)
     ) {
       units.push({ segments: batch })
       batch = []
@@ -154,7 +156,7 @@ export async function readDocx(data: Uint8Array): Promise<{
       total += text.length
       if (total > MAX_CHARACTERS) {
         throw new Error(
-          'The source exceeds the 60,000 character limit. Split it into smaller files.'
+          'The source exceeds the 100,000 character limit. Split it into smaller files.'
         )
       }
       if (paragraph && !paragraphIds.has(paragraph)) {

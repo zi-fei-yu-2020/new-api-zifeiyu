@@ -89,15 +89,14 @@ it('keeps searchable text-only PDFs on the structured text path', async () => {
   expect(result.units[0].segments?.[0].text).toBe('Product safety attachment')
   expect(result.units[0].image).toBeUndefined()
 })
-it('includes the entire mixed page when a digital heading accompanies an embedded scan', async () => {
+it('keeps a mixed page on the structured text path when searchable text exists', async () => {
   pdf.operations = [85]
   const result = await prepare()
-  expect(result.imagePages).toBe(1)
-  expect(result.units).toEqual([
-    { image: 'data:image/jpeg;base64,cGFnZQ==', page: 1, locateText: true },
-  ])
+  expect(result.imagePages).toBe(0)
+  expect(result.units[0].segments?.[0].text).toBe('Product safety attachment')
+  expect(result.units[0].image).toBeUndefined()
   expect(result.text).toContain('Product safety attachment')
-  expect(result.renderedPages?.[0].regions).toEqual([])
+  expect(result.renderedPages?.[0].regions.length).toBeGreaterThan(0)
 })
 it('continues to recognize scanned pages without selectable text', async () => {
   pdf.items = []
