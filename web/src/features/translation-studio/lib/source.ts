@@ -1,4 +1,4 @@
-/*
+﻿/*
 Copyright (C) 2023-2026 QuantumNous
 
 This program is free software: you can redistribute it and/or modify
@@ -24,8 +24,31 @@ import type {
 } from '../types'
 import { groupTranslationSegments, readDocx } from './docx'
 
+type PdfJsModule = typeof import('pdfjs-dist')
+
+async function loadPdfJs(): Promise<PdfJsModule> {
+  // The legacy bundle avoids a number of syntax and platform assumptions in
+  // the default build and is the supported entry point for older browsers.
+  return import('pdfjs-dist/legacy/build/pdf.mjs')
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (!signal.aborted) return
+  throw new DOMException('The operation was aborted.', 'AbortError')
+}
+
+function lastRegion(
+  regions: TranslationRegion[]
+): TranslationRegion | undefined {
+  let last: TranslationRegion | undefined
+  for (const region of regions) last = region
+  return last
+}
+
 export const MAX_FILE_BYTES = 10 * 1024 * 1024
-export const MAX_SOURCE_CHARACTERS = 60_000
+// Keep the limit above the largest supported 20-page technical PDF while
+// leaving enough headroom for the structured translation batches.
+export const MAX_SOURCE_CHARACTERS = 100_000
 export const MAX_PDF_PAGES = 20
 const CHUNK_CHARACTERS = 4_000
 
@@ -34,7 +57,7 @@ export function splitTranslationText(text: string): TranslationUnit[] {
   if (!normalized) throw new Error('No readable text was found in this file.')
   if (normalized.length > MAX_SOURCE_CHARACTERS) {
     throw new Error(
-      'The source exceeds the 60,000 character limit. Split it into smaller files.'
+      'The source exceeds the 100,000 character limit. Split it into smaller files.'
     )
   }
   const units: TranslationUnit[] = []
@@ -74,7 +97,7 @@ export async function readTranslationFile(
     )
   }
   const data = new Uint8Array(await file.arrayBuffer())
-  signal.throwIfAborted()
+  throwIfAborted(signal)
   const result: TranslationSource = {
     name: file.name,
     size: file.size,
@@ -104,7 +127,7 @@ export async function readTranslationFile(
     else if (isJpeg) mime = 'image/jpeg'
     const bitmap = await createImageBitmap(file)
     try {
-      signal.throwIfAborted()
+      throwIfAborted(signal)
       if (bitmap.width * bitmap.height > 40_000_000) {
         throw new Error('The image exceeds the 40 megapixel limit.')
       }
@@ -144,7 +167,7 @@ export async function readTranslationFile(
   }
   if (extension === 'docx') {
     const document = await readDocx(data)
-    signal.throwIfAborted()
+    throwIfAborted(signal)
     result.text = document.text
     result.units = document.units
     result.docx = document.template
@@ -162,9 +185,9 @@ export async function readTranslationFile(
   if (new TextDecoder().decode(data.slice(0, 5)) !== '%PDF-') {
     throw new Error('This PDF file could not be read.')
   }
-  const pdfjs = await import('pdfjs-dist')
+  const pdfjs = await loadPdfJs()
   pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    'pdfjs-dist/build/pdf.worker.min.mjs',
+    'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
     import.meta.url
   ).href
   const loading = pdfjs.getDocument({
@@ -181,7 +204,7 @@ export async function readTranslationFile(
   signal.addEventListener('abort', cancel, { once: true })
   let imageBytes = 0
   try {
-    signal.throwIfAborted()
+    throwIfAborted(signal)
     const pdf = await loading.promise
     if (pdf.numPages > MAX_PDF_PAGES) {
       throw new Error(
@@ -191,7 +214,7 @@ export async function readTranslationFile(
     result.pages = pdf.numPages
     const textPages: string[] = []
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      signal.throwIfAborted()
+      throwIfAborted(signal)
       const page = await pdf.getPage(pageNumber)
       const content = await page.getTextContent()
       const text = content.items
@@ -208,7 +231,7 @@ export async function readTranslationFile(
       canvas.width = Math.ceil(viewport.width)
       canvas.height = Math.ceil(viewport.height)
       await page.render({ canvas, viewport }).promise
-      signal.throwIfAborted()
+      throwIfAborted(signal)
       const image = canvas.toDataURL('image/jpeg', 0.94)
       imageBytes += image.length
       if (imageBytes > 32 * 1024 * 1024) {
@@ -216,32 +239,19 @@ export async function readTranslationFile(
           'The scanned pages are too large. Split the PDF into smaller files.'
         )
       }
-      const operations = await page.getOperatorList()
-      signal.throwIfAborted()
-      // A digital heading does not mean the rest of the page is searchable.
-      // Send mixed pages as a whole image so text inside scans/figures is included.
-      const imageOperations = new Set([
-        pdfjs.OPS.paintImageXObject,
-        pdfjs.OPS.paintInlineImageXObject,
-        pdfjs.OPS.paintImageMaskXObject,
-        pdfjs.OPS.paintImageXObjectRepeat,
-        pdfjs.OPS.paintInlineImageXObjectGroup,
-        pdfjs.OPS.paintImageMaskXObjectGroup,
-        pdfjs.OPS.paintImageMaskXObjectRepeat,
-      ])
-      const hasImages = operations.fnArray.some((operation) =>
-        imageOperations.has(operation)
-      )
+      // Embedded images are common in technical PDFs (logos, diagrams and
+      // cover art). Keep pages with a searchable text layer on the structured
+      // path; only image-only pages need a vision model.
       const regions: TranslationRegion[] = []
       if (text.length > 0) {
         textPages.push(text)
         if (textPages.join('\n').length > MAX_SOURCE_CHARACTERS) {
           throw new Error(
-            'The source exceeds the 60,000 character limit. Split it into smaller files.'
+            'The source exceeds the 100,000 character limit. Split it into smaller files.'
           )
         }
       }
-      if (text.length > 0 && !hasImages) {
+      if (text.length > 0) {
         for (const item of content.items) {
           if (!('str' in item) || !item.str.trim()) continue
           const m = pdfjs.Util.transform(viewport.transform, item.transform)
@@ -277,7 +287,7 @@ export async function readTranslationFile(
             ] as [number, number, number, number],
           }
           // Adjacent spans on one horizontal line are translated together.
-          const previous = regions.at(-1)
+          const previous = lastRegion(regions)
           if (
             previous &&
             Math.abs(previous.box[1] - region.box[1]) < 2 &&
@@ -327,7 +337,7 @@ export async function readTranslationFile(
     }
     return result
   } catch (error) {
-    signal.throwIfAborted()
+    throwIfAborted(signal)
     if (error instanceof Error && error.name === 'PasswordException') {
       throw new Error('Unlock this password-protected PDF before uploading.')
     }

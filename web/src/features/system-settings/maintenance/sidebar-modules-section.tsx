@@ -96,6 +96,10 @@ export function SidebarModulesSection({
         title: t('Translation Studio'),
         description: t('Show Translation Studio in the sidebar.'),
       },
+      career_studio: {
+        title: t('Career Studio'),
+        description: t('Show Career Studio in the sidebar.'),
+      },
       games: {
         title: t('Game Center'),
         description: t('Show Game Center in the sidebar.'),

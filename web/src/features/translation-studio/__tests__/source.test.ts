@@ -54,7 +54,7 @@ describe('translation source preparation', () => {
 
   it('rejects empty and oversized text before any model request', () => {
     expect(() => splitTranslationText('   ')).toThrow('No readable text')
-    expect(() => splitTranslationText('a'.repeat(60_001))).toThrow('60,000')
+    expect(() => splitTranslationText('a'.repeat(100_001))).toThrow('100,000')
   })
 
   it('extracts DOCX paragraphs and table rows without rendering document HTML', async () => {

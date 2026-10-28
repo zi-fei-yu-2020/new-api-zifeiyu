@@ -231,6 +231,7 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 		"playground":         true,
 		"image_studio":       true,
 		"translation_studio": true,
+		"career_studio":      true,
 		"games":              true,
 		"chat":               true,
 	}

@@ -206,6 +206,21 @@ describe('translation studio sidebar visibility', () => {
 })
 
 describe('independent studio and game navigation', () => {
+  it('shows Career Studio by default and hides it when the admin turns it off', () => {
+    const shown = sidebarFor()
+    expect(
+      shown.result.current
+        .flatMap((group) => group.items)
+        .some((item) => item.title === 'Career Studio')
+    ).toBe(true)
+    cleanup()
+    const hidden = sidebarFor({ chat: { enabled: true, career_studio: false } })
+    expect(
+      hidden.result.current
+        .flatMap((group) => group.items)
+        .some((item) => item.title === 'Career Studio')
+    ).toBe(false)
+  })
   it('does not tie independent entries to the playground switch', () => {
     const { result } = sidebarFor({
       chat: {

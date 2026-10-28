@@ -78,6 +78,11 @@ export function SidebarModulesCard() {
           description: t('Show Translation Studio in the sidebar.'),
         },
         {
+          key: 'career_studio',
+          title: t('Career Studio'),
+          description: t('Show Career Studio in the sidebar.'),
+        },
+        {
           key: 'games',
           title: t('Game Center'),
           description: t('Show Game Center in the sidebar.'),
