@@ -26,7 +26,7 @@ const pdf = vi.hoisted(() => ({
   cleanup: vi.fn(),
   destroy: vi.fn(),
 }))
-vi.mock('pdfjs-dist', () => ({
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: {},
   OPS: {
     paintImageXObject: 85,
@@ -83,6 +83,13 @@ async function prepare() {
   })
   return readTranslationFile(file, new AbortController().signal)
 }
+function legacySignal() {
+  return {
+    aborted: false,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  } as unknown as AbortSignal
+}
 it('keeps searchable text-only PDFs on the structured text path', async () => {
   const result = await prepare()
   expect(result.imagePages).toBe(0)
@@ -104,4 +111,13 @@ it('continues to recognize scanned pages without selectable text', async () => {
   const result = await prepare()
   expect(result.imagePages).toBe(1)
   expect(result.units[0].locateText).toBe(true)
+})
+it('does not require AbortSignal.throwIfAborted in older browsers', async () => {
+  const bytes = new TextEncoder().encode('%PDF-test')
+  const file = new File([bytes], 'attachment.pdf')
+  Object.defineProperty(file, 'arrayBuffer', {
+    value: async () => bytes.buffer,
+  })
+  const result = await readTranslationFile(file, legacySignal())
+  expect(result.units[0].segments?.[0].text).toBe('Product safety attachment')
 })
