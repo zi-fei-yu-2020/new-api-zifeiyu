@@ -36,6 +36,9 @@ const settings = {
   subsequent_token_quota: 250000,
   daily_budget: 0,
   weekly_budget: 50000,
+  pvp_enabled: true,
+  pvp_min_stake: 500000,
+  pvp_max_stake: 50000000,
 }
 let client: QueryClient
 beforeEach(() => {
@@ -74,8 +77,8 @@ it('saves only game configuration and retains reward amounts when toggling the g
   expect(
     screen.queryByRole('switch', { name: 'Translation Studio' })
   ).not.toBeInTheDocument()
-  expect(screen.getAllByRole('switch')).toHaveLength(2)
-  expect(screen.getAllByRole('spinbutton')).toHaveLength(6)
+  expect(screen.getAllByRole('switch')).toHaveLength(3)
+  expect(screen.getAllByRole('spinbutton')).toHaveLength(8)
   await userEvent.click(enabled)
   await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
   await waitFor(() => expect(api.put).toHaveBeenCalledOnce())
@@ -88,6 +91,46 @@ it('saves only game configuration and retains reward amounts when toggling the g
     weekly_budget: 32500,
     enabled: false,
   })
+})
+it('saves the PvP duel switch and stake bounds', async () => {
+  render(<Workspace />)
+  const pvpSwitch = await screen.findByRole('switch', {
+    name: 'Enable PvP duels',
+  })
+  const min = screen.getByRole('spinbutton', {
+    name: /Minimum duel stake/,
+  })
+  const max = screen.getByRole('spinbutton', {
+    name: /Maximum duel stake/,
+  })
+  await userEvent.clear(min)
+  await userEvent.type(min, '2')
+  await userEvent.clear(max)
+  await userEvent.type(max, '500')
+  await userEvent.click(pvpSwitch)
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(api.put).toHaveBeenCalledOnce())
+  expect(api.put).toHaveBeenCalledWith(
+    '/api/user/game/settings',
+    expect.objectContaining({
+      pvp_enabled: false,
+      pvp_min_stake: 1000000,
+      pvp_max_stake: 250000000,
+    })
+  )
+})
+it('rejects a maximum duel stake below the minimum instead of saving it', async () => {
+  render(<Workspace />)
+  const max = await screen.findByRole('spinbutton', {
+    name: /Maximum duel stake/,
+  })
+  await userEvent.clear(max)
+  await userEvent.type(max, '0.5')
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Invalid game reward settings'
+  )
+  expect(api.put).not.toHaveBeenCalled()
 })
 it('does not turn an empty reward amount into an unintended zero-value reward', async () => {
   render(<Workspace />)

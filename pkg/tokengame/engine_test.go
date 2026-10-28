@@ -1,10 +1,10 @@
 package tokengame
 
 import (
-	"encoding/json"
 	"os"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,7 +16,7 @@ func TestLegacyReplayCompatibility(t *testing.T) {
 		Inputs []int
 		State  State
 	}
-	require.NoError(t, json.Unmarshal(raw, &fixtures))
+	require.NoError(t, common.Unmarshal(raw, &fixtures))
 	for _, fixture := range fixtures {
 		state := New(fixture.Seed)
 		state.Version = 1
@@ -47,9 +47,9 @@ func TestUpgradePausesCombatAndCannotBeExtended(t *testing.T) {
 	require.Equal(t, 299, state.Cursor())
 	require.True(t, state.UpgradePending())
 	// Saving and restoring a checkpoint cannot renew the choice timer.
-	raw, err := json.Marshal(state)
+	raw, err := common.Marshal(state)
 	require.NoError(t, err)
-	require.NoError(t, json.Unmarshal(raw, &state))
+	require.NoError(t, common.Unmarshal(raw, &state))
 	state.Step(0)
 	require.False(t, state.UpgradePending())
 	require.Equal(t, 1, state.Upgrades)
@@ -107,7 +107,7 @@ func TestSprintReplayCompatibility(t *testing.T) {
 		Inputs []int
 		State  State
 	}
-	require.NoError(t, json.Unmarshal(raw, &fixtures))
+	require.NoError(t, common.Unmarshal(raw, &fixtures))
 	for _, fixture := range fixtures {
 		state := New(fixture.Seed)
 		state.Version = fixture.State.Version
@@ -200,7 +200,7 @@ func TestCombatReplayCompatibility(t *testing.T) {
 		Inputs []int
 		State  State
 	}
-	require.NoError(t, json.Unmarshal(raw, &fixtures))
+	require.NoError(t, common.Unmarshal(raw, &fixtures))
 	for _, fixture := range fixtures {
 		s := New(fixture.Seed)
 		for _, input := range fixture.Inputs {

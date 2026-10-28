@@ -82,6 +82,22 @@ type GameSettings struct {
 	RewardVersion        int  `json:"reward_version"`
 	FirstTokenQuota      int  `json:"first_token_quota"`
 	SubsequentTokenQuota int  `json:"subsequent_token_quota"`
+	PvpEnabled           bool `json:"pvp_enabled"`
+	PvpMinStake          int  `json:"pvp_min_stake"`
+	PvpMaxStake          int  `json:"pvp_max_stake"`
+}
+
+// PvpStakeBounds returns the effective PvP stake window, substituting the
+// defaults for unset (zero) values the same way normalization does.
+func (settings GameSettings) PvpStakeBounds() (int, int) {
+	minStake, maxStake := settings.PvpMinStake, settings.PvpMaxStake
+	if minStake == 0 {
+		minStake = common.QuotaRound(common.QuotaPerUnit / 10)
+	}
+	if maxStake == 0 {
+		maxStake = common.QuotaRound(100 * common.QuotaPerUnit)
+	}
+	return minStake, maxStake
 }
 
 func normalizeGameSettings(settings GameSettings) GameSettings {
@@ -91,6 +107,9 @@ func normalizeGameSettings(settings GameSettings) GameSettings {
 	if settings.WeeklyRewardVersion == 0 {
 		settings.WeeklyRewardVersion = 1
 	}
+	// PvP stake bounds keep their defaults until configured; the enabled flag
+	// itself is a plain bool so an unset value means disabled.
+	settings.PvpMinStake, settings.PvpMaxStake = settings.PvpStakeBounds()
 	if settings.WeeklyRewardVersion == 1 {
 		settings.WeeklyFirstQuota = int(int64(settings.WeeklyBudget) * 30 / 100)
 		settings.WeeklySecondQuota = int(int64(settings.WeeklyBudget) * 20 / 100)
@@ -129,7 +148,7 @@ func (period GamePeriod) weeklyPrizes() []int {
 }
 
 func GetGameSettings() (GameSettings, error) {
-	settings := GameSettings{Enabled: true, RewardVersion: 2, WeeklyRewardVersion: 1, FirstTokenQuota: common.QuotaRound(5 * common.QuotaPerUnit), SubsequentTokenQuota: common.QuotaRound(common.QuotaPerUnit / 2), DailyBudget: 0, WeeklyBudget: 50000}
+	settings := GameSettings{Enabled: true, RewardVersion: 2, WeeklyRewardVersion: 1, FirstTokenQuota: common.QuotaRound(5 * common.QuotaPerUnit), SubsequentTokenQuota: common.QuotaRound(common.QuotaPerUnit / 2), DailyBudget: 0, WeeklyBudget: 50000, PvpEnabled: true, PvpMinStake: common.QuotaRound(common.QuotaPerUnit / 10), PvpMaxStake: common.QuotaRound(100 * common.QuotaPerUnit)}
 	var option Option
 	err := DB.Where(&Option{Key: "game_center"}).First(&option).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -234,6 +253,11 @@ func ValidateGameSettings(settings GameSettings) error {
 		return ErrGameSettings
 	}
 	if settings.FirstTokenQuota < 0 || settings.SubsequentTokenQuota < 0 || settings.FirstTokenQuota > 1000000000 || settings.SubsequentTokenQuota > 1000000000 || int64(settings.FirstTokenQuota)+int64(tokengame.MaxTokens-1)*int64(settings.SubsequentTokenQuota) > 1000000000 {
+		return ErrGameSettings
+	}
+	// PvP stakes use the effective bounds so unset values validate as defaults.
+	minStake, maxStake := settings.PvpStakeBounds()
+	if minStake < 0 || maxStake < 0 || minStake > maxStake || settings.PvpMinStake > common.MaxWalletQuota || settings.PvpMaxStake > common.MaxWalletQuota {
 		return ErrGameSettings
 	}
 

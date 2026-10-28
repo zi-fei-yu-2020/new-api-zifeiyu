@@ -59,16 +59,26 @@ const amountSchema = z.preprocess(
     typeof value === 'string' && value.trim() === '' ? Number.NaN : value,
   z.coerce.number().min(0)
 )
-const schema = z.object({
-  enabled: z.boolean(),
-  rewardsEnabled: z.boolean(),
-  first: amountSchema,
-  additional: amountSchema,
-  dailyBudget: amountSchema,
-  weeklyFirst: amountSchema,
-  weeklySecond: amountSchema,
-  weeklyThird: amountSchema,
-})
+const schema = z
+  .object({
+    enabled: z.boolean(),
+    rewardsEnabled: z.boolean(),
+    first: amountSchema,
+    additional: amountSchema,
+    dailyBudget: amountSchema,
+    weeklyFirst: amountSchema,
+    weeklySecond: amountSchema,
+    weeklyThird: amountSchema,
+    pvpEnabled: z.boolean(),
+    pvpMin: amountSchema,
+    pvpMax: amountSchema,
+  })
+  .refine(
+    (values) =>
+      parseQuotaFromDollars(Number(values.pvpMin)) <=
+      parseQuotaFromDollars(Number(values.pvpMax)),
+    { path: ['pvpMax'] }
+  )
 type Values = z.infer<typeof schema>
 export function GameSettingsSection() {
   const { t } = useTranslation()
@@ -107,6 +117,9 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
       weeklyThird: quotaUnitsToDollars(
         settings.weekly_third_quota ?? Math.floor(settings.weekly_budget * 0.15)
       ),
+      pvpEnabled: settings.pvp_enabled ?? true,
+      pvpMin: quotaUnitsToDollars(settings.pvp_min_stake ?? 0),
+      pvpMax: quotaUnitsToDollars(settings.pvp_max_stake ?? 0),
     }),
     [settings]
   )
@@ -146,6 +159,9 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
           parseQuotaFromDollars(values.weeklyFirst) +
           parseQuotaFromDollars(values.weeklySecond) +
           parseQuotaFromDollars(values.weeklyThird),
+        pvp_enabled: values.pvpEnabled,
+        pvp_min_stake: parseQuotaFromDollars(values.pvpMin),
+        pvp_max_stake: parseQuotaFromDollars(values.pvpMax),
       })
       form.reset(values)
       toast.success(t('Saved successfully'))
@@ -305,6 +321,65 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
                 'Turn on quota rewards to activate weekly prizes. Turning them off does not cancel an already activated week.'
               )}
             </FieldDescription>
+          </div>
+          <div className='space-y-4 border-t pt-5'>
+            <div className='flex items-center justify-between gap-4'>
+              <div>
+                <h3 className='text-sm font-semibold'>{t('PvP duels')}</h3>
+                <FieldDescription>
+                  {t(
+                    'Stakes are escrowed when a duel starts and the winner takes the pot. Zero keeps the default bounds.'
+                  )}
+                </FieldDescription>
+              </div>
+            </div>
+            <SettingsSwitchField
+              controlId='game-pvp'
+              label={t('Enable PvP duels')}
+              checked={form.watch('pvpEnabled')}
+              onCheckedChange={(v) =>
+                form.setValue('pvpEnabled', v, { shouldDirty: true })
+              }
+              description={t(
+                'Turning off PvP stops new duels, queue entries and invites. Duels already in progress finish and settle.'
+              )}
+            />
+            <div className='grid gap-5 sm:grid-cols-2'>
+              <Field>
+                <FieldLabel htmlFor='game-pvp-min-stake'>
+                  {t('Minimum duel stake')} ({getCurrencyLabel()})
+                </FieldLabel>
+                <Input
+                  id='game-pvp-min-stake'
+                  type='number'
+                  min={0}
+                  step={getEditableQuotaStep()}
+                  {...form.register('pvpMin')}
+                />
+                <FieldDescription>
+                  {t(
+                    'The smallest stake a ranked queue or friendly duel accepts.'
+                  )}
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor='game-pvp-max-stake'>
+                  {t('Maximum duel stake')} ({getCurrencyLabel()})
+                </FieldLabel>
+                <Input
+                  id='game-pvp-max-stake'
+                  type='number'
+                  min={0}
+                  step={getEditableQuotaStep()}
+                  {...form.register('pvpMax')}
+                />
+                <FieldDescription>
+                  {t(
+                    'Friendly stakes are also capped by both players’ balances.'
+                  )}
+                </FieldDescription>
+              </Field>
+            </div>
           </div>
           {Object.keys(form.formState.errors).length > 0 && (
             <p role='alert' className='text-destructive text-sm'>
