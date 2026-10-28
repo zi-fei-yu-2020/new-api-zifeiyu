@@ -1,7 +1,9 @@
 package minimax
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,8 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetRequestURLForImageGeneration(t *testing.T) {
@@ -117,6 +121,99 @@ func TestDoResponseForImageGeneration(t *testing.T) {
 	}
 	if strings.Contains(body, `"image_urls"`) {
 		t.Fatalf("response body = %s, should not expose raw MiniMax image_urls payload", body)
+	}
+}
+
+func TestConvertAudioRequestAlwaysRequestsHexAudio(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name           string
+		responseFormat string
+		wantFormat     string
+	}{
+		{name: "mp3", responseFormat: "mp3", wantFormat: "mp3"},
+		{name: "wav", responseFormat: "wav", wantFormat: "wav"},
+		{name: "default", responseFormat: "", wantFormat: "mp3"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := gin.CreateTestContextOnly(httptest.NewRecorder(), gin.New())
+			info := &relaycommon.RelayInfo{
+				RelayMode:       relayconstant.RelayModeAudioSpeech,
+				OriginModelName: "speech-02-turbo",
+			}
+			request := dto.AudioRequest{
+				Model:          "speech-02-turbo",
+				Input:          "你好",
+				Voice:          "male-qn-qingse",
+				ResponseFormat: tc.responseFormat,
+			}
+
+			reader, err := (&Adaptor{}).ConvertAudioRequest(c, info, request)
+			require.NoError(t, err)
+			body, err := io.ReadAll(reader)
+			require.NoError(t, err)
+
+			var payload map[string]any
+			require.NoError(t, json.Unmarshal(body, &payload))
+			assert.Equal(t, "hex", payload["output_format"])
+			audioSetting, ok := payload["audio_setting"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantFormat, audioSetting["format"])
+			assert.Equal(t, "你好", payload["text"])
+		})
+	}
+}
+
+func TestDoResponseForTTSReturnsDecodedAudio(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name            string
+		responseFormat  string
+		wantContentType string
+	}{
+		{name: "mp3", responseFormat: "mp3", wantContentType: "audio/mpeg"},
+		{name: "wav", responseFormat: "wav", wantContentType: "audio/wav"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			recorder := httptest.NewRecorder()
+			c := gin.CreateTestContextOnly(recorder, gin.New())
+			info := &relaycommon.RelayInfo{
+				RelayMode:       relayconstant.RelayModeAudioSpeech,
+				OriginModelName: "speech-02-turbo",
+			}
+			_, err := (&Adaptor{}).ConvertAudioRequest(c, info, dto.AudioRequest{
+				Input:          "hi",
+				Voice:          "male-qn-qingse",
+				ResponseFormat: tc.responseFormat,
+			})
+			require.NoError(t, err)
+
+			audio := []byte("ID3\x03audio-bytes")
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: ioNopCloser(`{"data":{"audio":"` + hex.EncodeToString(audio) +
+					`","status":2},"extra_info":{"usage_characters":2},"base_resp":{"status_code":0}}`),
+			}
+
+			usage, apiErr := (&Adaptor{}).DoResponse(c, resp, info)
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.Equal(t, tc.wantContentType, recorder.Header().Get("Content-Type"))
+			assert.Equal(t, audio, recorder.Body.Bytes())
+		})
 	}
 }
 

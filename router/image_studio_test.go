@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -331,6 +334,186 @@ func TestImageStudioSessionRelay(t *testing.T) {
 		before := calls.Load()
 		rec := send(encode(request), "application/json", session.AccessToken)
 		require.Equal(t, 401, rec.Code, rec.Body.String())
+		require.Equal(t, before, calls.Load())
+	})
+}
+
+func TestCareerSpeechSessionRelay(t *testing.T) {
+	setupRelayRouterTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Log{}, &model.UserSession{}, &model.UserSubscription{}, &model.UserAccessToken{}, &model.AuthFlow{}))
+	sqlDB, err := model.DB.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	previousMemory, previousBatch, previousLog, previousCount := common.MemoryCacheEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled, constant.CountToken
+	previousPrices := ratio_setting.ModelPrice2JSONString()
+	// TTS bills the counted input runes; production enables CountToken by default.
+	common.MemoryCacheEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled, constant.CountToken = false, false, true, true
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"career-tts-test":0.01,"text-only":0.01}`))
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled, constant.CountToken = previousMemory, previousBatch, previousLog, previousCount
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices))
+	})
+	user := model.User{Username: "career-speech-user", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", Quota: 1000000, AuthVersion: 1, Setting: `{"billing_preference":"wallet_only"}`}
+	require.NoError(t, model.DB.Create(&user).Error)
+	session, err := service.CreateLoginSession(user.Id, "password", "127.0.0.1", "speech-test")
+	require.NoError(t, err)
+	suffix, err := common.GenerateRandomCharsKey(43)
+	require.NoError(t, err)
+	pat := model.AccessTokenPrefix + suffix
+	patRow := &model.UserAccessToken{Name: "speech pat", TokenHash: model.AccessTokenFingerprint(pat), TokenHint: model.AccessTokenHint(pat)}
+	require.NoError(t, patRow.SetScopes([]string{"profile:read"}))
+	require.NoError(t, model.CreateUserAccessToken(user.Id, patRow, service.AccessTokenMaxPerUser))
+
+	audio := []byte("ID3-fake-mp3-bytes")
+	var calls atomic.Int32
+	var fail atomic.Bool
+	var lastBody atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/v1/audio/speech", r.URL.Path)
+		assert.Empty(t, r.URL.RawQuery, "dashboard query parameters leaked upstream")
+		assert.Equal(t, "Bearer channel-test-key", r.Header.Get("Authorization"))
+		var body map[string]any
+		if !assert.NoError(t, common.DecodeJson(r.Body, &body)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		lastBody.Store(body)
+		if fail.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"provider rejected input","type":"invalid_request_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write(audio)
+	}))
+	defer upstream.Close()
+	channel := model.Channel{Type: constant.ChannelTypeOpenAI, Key: "channel-test-key", Status: common.ChannelStatusEnabled, Name: "speech-test", BaseURL: &upstream.URL, Models: "career-tts-test,text-only", Group: "default"}
+	require.NoError(t, channel.Insert())
+	engine := gin.New()
+	SetRelayRouter(engine)
+	send := func(body io.Reader, contentType, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/pg/audio/speech?key=must-not-forward", body)
+		req.Header.Set("Content-Type", contentType)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+	request := map[string]any{"model": "career-tts-test", "input": "  请做一下自我介绍。 ", "voice": "alloy", "group": "default"}
+	encode := func(v any) io.Reader {
+		data, err := common.Marshal(v)
+		require.NoError(t, err)
+		return bytes.NewReader(data)
+	}
+	with := func(field string, value any) map[string]any {
+		payload := maps.Clone(request)
+		payload[field] = value
+		return payload
+	}
+
+	t.Run("unauthenticated request cannot spend quota", func(t *testing.T) {
+		rec := send(encode(request), "application/json", "")
+		require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+		require.Zero(t, calls.Load())
+	})
+	t.Run("personal access token is rejected", func(t *testing.T) {
+		rec := send(encode(request), "application/json", pat)
+		require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+		require.Zero(t, calls.Load())
+	})
+	t.Run("speech uses own group and charges the wallet", func(t *testing.T) {
+		before, err := model.GetUserQuota(user.Id, true)
+		require.NoError(t, err)
+		rec := send(encode(request), "application/json", session.AccessToken)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, audio, rec.Body.Bytes())
+		assert.Equal(t, "audio/mpeg", rec.Header().Get("Content-Type"))
+		assert.Equal(t, map[string]any{"model": "career-tts-test", "input": "请做一下自我介绍。", "voice": "alloy", "speed": float64(1), "response_format": "mp3"}, lastBody.Load())
+		after, err := model.GetUserQuota(user.Id, true)
+		require.NoError(t, err)
+		assert.Equal(t, before-int(0.01*common.QuotaPerUnit), after)
+		var log model.Log
+		require.NoError(t, model.DB.Where("type = ?", model.LogTypeConsume).Last(&log).Error)
+		assert.Equal(t, "career-speech", log.TokenName)
+		assert.Zero(t, log.TokenId)
+	})
+	t.Run("vendor passthrough fields never reach the provider", func(t *testing.T) {
+		for name, extra := range map[string]map[string]any{
+			"metadata text":         {"metadata": map[string]any{"text": strings.Repeat("长", 5000)}},
+			"metadata request text": {"metadata": map[string]any{"request": map[string]any{"text": strings.Repeat("长", 5000)}, "app": map[string]any{"appid": "x"}}},
+			"stream format":         {"stream_format": "sse"},
+			"instructions":          {"instructions": "whisper"},
+			"vllm reference audio":  {"ref_audio": "data:audio/wav;base64,AAAA", "max_new_tokens": 99999},
+		} {
+			t.Run(name, func(t *testing.T) {
+				payload := maps.Clone(request)
+				maps.Copy(payload, extra)
+				payload["speed"] = 1.5
+				rec := send(encode(payload), "application/json", session.AccessToken)
+				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+				body, _ := lastBody.Load().(map[string]any)
+				assert.ElementsMatch(t, []string{"model", "input", "voice", "speed", "response_format"}, slices.Collect(maps.Keys(body)))
+				assert.Equal(t, 1.5, body["speed"])
+			})
+		}
+	})
+	t.Run("invalid inputs cannot reach the provider", func(t *testing.T) {
+		before := calls.Load()
+		for _, tc := range []struct {
+			name    string
+			payload map[string]any
+			status  int
+		}{
+			{"foreign group", with("group", "other-team"), http.StatusForbidden},
+			{"unavailable model", with("model", "private-tts-model"), http.StatusForbidden},
+			{"not speech model", with("model", "text-only"), http.StatusForbidden},
+			{"empty input", with("input", ""), http.StatusBadRequest},
+			{"whitespace input", with("input", " \n\t "), http.StatusBadRequest},
+			{"long input", with("input", strings.Repeat("字", 2001)), http.StatusBadRequest},
+			{"zero speed", with("speed", 0), http.StatusBadRequest},
+			{"negative speed", with("speed", -1), http.StatusBadRequest},
+			{"fast speed", with("speed", 2.01), http.StatusBadRequest},
+			{"huge speed", with("speed", 1e308), http.StatusBadRequest},
+			{"wav format", with("response_format", "wav"), http.StatusBadRequest},
+			{"missing voice", with("voice", ""), http.StatusBadRequest},
+			{"long voice", with("voice", strings.Repeat("v", 65)), http.StatusBadRequest},
+			{"voice charset", with("voice", "a b<"), http.StatusBadRequest},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				rec := send(encode(tc.payload), "application/json", session.AccessToken)
+				require.Equal(t, tc.status, rec.Code, rec.Body.String())
+			})
+		}
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		for key, value := range map[string]string{"model": "career-tts-test", "input": "hello", "voice": "alloy"} {
+			require.NoError(t, writer.WriteField(key, value))
+		}
+		require.NoError(t, writer.Close())
+		rec := send(&body, writer.FormDataContentType(), session.AccessToken)
+		require.Equal(t, http.StatusUnsupportedMediaType, rec.Code, rec.Body.String())
+		require.Equal(t, before, calls.Load())
+	})
+	t.Run("failed upstream request refunds reserved quota", func(t *testing.T) {
+		before, err := model.GetUserQuota(user.Id, false)
+		require.NoError(t, err)
+		fail.Store(true)
+		defer fail.Store(false)
+		rec := send(encode(request), "application/json", session.AccessToken)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		require.Eventually(t, func() bool { after, err := model.GetUserQuota(user.Id, false); return err == nil && after == before }, time.Second*3, time.Millisecond*10)
+	})
+	t.Run("revoked session is rejected", func(t *testing.T) {
+		_, err := model.RevokeUserSession(user.Id, session.Session.SID, "test")
+		require.NoError(t, err)
+		before := calls.Load()
+		rec := send(encode(request), "application/json", session.AccessToken)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
 		require.Equal(t, before, calls.Load())
 	})
 }

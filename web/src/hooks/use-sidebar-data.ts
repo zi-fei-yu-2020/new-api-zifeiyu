@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   Activity,
   Box,
+  BriefcaseBusiness,
   ClipboardList,
   CreditCard,
   FileText,
@@ -74,6 +75,11 @@ export function useSidebarData(): SidebarData {
             title: t('Translation Studio'),
             url: '/translation-studio',
             icon: Languages,
+          },
+          {
+            title: t('Career Studio'),
+            url: '/career-studio',
+            icon: BriefcaseBusiness,
           },
           { title: t('Game Center'), url: '/games', icon: Gamepad2 },
           {

@@ -61,6 +61,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     playground: true,
     image_studio: true,
     translation_studio: true,
+    career_studio: true,
     games: true,
     chat: true,
   },

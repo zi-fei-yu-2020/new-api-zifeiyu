@@ -157,10 +157,7 @@ func handleTTSResponse(c *gin.Context, resp *http.Response, info *relaycommon.Re
 			)
 		}
 
-		// Determine content type - default to mp3
-		contentType := "audio/mpeg"
-
-		c.Data(http.StatusOK, contentType, audioData)
+		c.Data(http.StatusOK, getContentTypeByFormat(c.GetString("response_format")), audioData)
 	}
 
 	usage = &dto.Usage{
