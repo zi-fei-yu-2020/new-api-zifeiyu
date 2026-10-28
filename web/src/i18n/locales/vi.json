@@ -7776,6 +7776,7 @@
     "PvP input rejected. Refresh the duel and retry": "Đầu vào PvP bị từ chối. Tải lại trận đấu và thử lại",
     "PvP match history": "Lịch sử đấu PvP",
     "PvP match not found": "Không tìm thấy trận PvP",
+    "PvP replay is only available after the duel finishes": "Bản phát lại PvP chỉ khả dụng sau khi trận đấu kết thúc",
     "PvP stake refunded: {{quota}}": "Đã hoàn lại cược PvP: {{quota}}",
     "Quota change": "Thay đổi quota",
     "Ranked": "Xếp hạng",

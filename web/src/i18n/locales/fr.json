@@ -7776,6 +7776,7 @@
     "PvP input rejected. Refresh the duel and retry": "Entrée PvP refusée. Actualisez le duel et réessayez",
     "PvP match history": "Historique des duels PvP",
     "PvP match not found": "Duel PvP introuvable",
+    "PvP replay is only available after the duel finishes": "La rediffusion PvP est disponible uniquement après la fin du duel",
     "PvP stake refunded: {{quota}}": "Mise PvP remboursée : {{quota}}",
     "Quota change": "Variation de quota",
     "Ranked": "Classé",

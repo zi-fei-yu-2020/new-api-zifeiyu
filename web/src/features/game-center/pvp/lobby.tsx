@@ -116,19 +116,21 @@ export function PvpLobby() {
   const [dismissed, setDismissed] = useState<string | null>(null)
   useEffect(() => {
     const view = status.data?.match
-    if (!view) return
+    if (!view || view.id === dismissed) return
     if (sessionMatch?.id === view.id && sessionMatch.status === view.status) {
       return
     }
     install(view)
-  }, [status.data, sessionMatch?.id, sessionMatch?.status, install])
+  }, [status.data, sessionMatch?.id, sessionMatch?.status, dismissed, install])
   const leaveResult = () => {
     if (active) setDismissed(active.id)
     install(null)
     void queryClient.invalidateQueries({ queryKey: ['pvp-status'] })
   }
   const ownedMatch =
-    sessionMatch?.status === 'playing' || sessionMatch?.status === 'finished'
+    sessionMatch &&
+    sessionMatch.id !== dismissed &&
+    (sessionMatch.status === 'playing' || sessionMatch.status === 'finished')
       ? sessionMatch
       : null
 
@@ -160,14 +162,16 @@ export function PvpLobby() {
       </div>
     )
   }
-  const inDuel = !!ownedMatch || active?.status === 'invited'
+  const inDuel =
+    !!ownedMatch ||
+    (active?.status === 'invited' && active.id !== dismissed)
   const waiting = !inDuel && !!status.data.queue
   return (
     <div className='space-y-5'>
       {ownedMatch ? (
         <DuelStage match={ownedMatch} session={session} onExit={leaveResult} />
       ) : null}
-      {!ownedMatch && active?.status === 'invited' ? (
+      {!ownedMatch && active?.status === 'invited' && active.id !== dismissed ? (
         <InvitePanel match={active} />
       ) : null}
       {!ownedMatch &&

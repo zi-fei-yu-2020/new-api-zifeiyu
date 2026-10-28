@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,9 @@ func TestPvPDatabaseMatrix(t *testing.T) {
 			t.Run("inputs", func(t *testing.T) { testPvPInputs(t, db) })
 			t.Run("friendly", func(t *testing.T) { testPvPFriendly(t, db) })
 			t.Run("maintenance", func(t *testing.T) { testPvPMaintenance(t, db) })
+			t.Run("deleted-payee", func(t *testing.T) { testPvPDeletedPayee(t, db) })
+			t.Run("replay-gate", func(t *testing.T) { testPvPReplayGate(t, db) })
+			t.Run("maintenance-resilience", func(t *testing.T) { testPvPMaintenanceResilience(t, db) })
 			t.Run("settings", func(t *testing.T) { testPvPSettings(t, db) })
 			require.NoError(t, db.Migrator().DropTable(models...))
 		})
@@ -550,4 +554,139 @@ func TestPvPToleranceWidening(t *testing.T) {
 			require.False(t, pvpTolerated(tc.a, tc.b, tc.waitSeconds), "%d vs %d after %ds", tc.a, tc.b, tc.waitSeconds)
 		}
 	}
+}
+
+// A payee deleted mid-duel must not trap the escrowed pot: settlement still
+// finishes the match, the un-creditable payout is recorded as an overflow
+// ledger row, and the survivor is never left blocked or unrenderable.
+func testPvPDeletedPayee(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	base := time.Date(2026, 12, 7, 12, 0, 0, 0, gameZone)
+	pvpTestUser(t, db, 61, 100000)
+	pvpTestUser(t, db, 62, 100000)
+	first, _ := pvpPair(t, db, 61, 62, 50000, base)
+	now := base.Add(11 * time.Second)
+	// The winner soft-deletes between escrow and settlement; First can no
+	// longer see the row, exactly like a hard-deleted account.
+	require.NoError(t, db.Delete(&User{}, 62).Error)
+	var gone User
+	require.ErrorIs(t, db.First(&gone, 62).Error, gorm.ErrRecordNotFound)
+	final, err := SubmitPvPInput(61, first.ID, 1, 0, nil, true, pvpSigned(first.You.Secret, first.ID, 1, 1, 0, nil, true), now)
+	require.NoError(t, err, "settlement must not depend on the payee row existing")
+	require.Equal(t, "finished", final.Status)
+	require.Equal(t, 2, final.WinnerSlot)
+	var stored PvPMatch
+	require.NoError(t, db.First(&stored, "id = ?", first.ID).Error)
+	require.Equal(t, "finished", stored.Status)
+	var survivor User
+	require.NoError(t, db.First(&survivor, 61).Error)
+	require.Equal(t, 50000, survivor.Quota, "the resigner still forfeits the stake")
+	var vanished User
+	require.NoError(t, db.Unscoped().First(&vanished, 62).Error)
+	require.Equal(t, 50000, vanished.Quota, "the deleted winner's wallet is untouched")
+	var payout, overflow PvPLedger
+	require.NoError(t, db.Where("id = ?", "payout:"+first.ID).First(&payout).Error)
+	require.Equal(t, 100000, payout.Amount)
+	require.NoError(t, db.Where("id = ?", "overflow:"+first.ID).First(&overflow).Error)
+	require.Equal(t, "overflow", overflow.Kind)
+	require.Equal(t, 100000, overflow.Amount, "the un-creditable pot is recorded as overflow instead of vanishing")
+	// The vanished opponent renders as a placeholder instead of failing views.
+	status, err := GetPvPStatus(61, now)
+	require.NoError(t, err)
+	require.NotNil(t, status.Match)
+	require.Equal(t, "finished", status.Match.Status)
+	require.Equal(t, 62, status.Match.Opponent.ID)
+	require.Equal(t, "Deleted account", status.Match.Opponent.DisplayName)
+	// The survivor is free to duel again: no permanent active-duel lock.
+	_, queued, err := JoinPvPQueue(61, 50000, now.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, queued)
+	require.NoError(t, LeavePvPQueue(61, now.Add(2*time.Second)))
+	require.NoError(t, db.First(&survivor, 61).Error)
+	require.Equal(t, 50000, survivor.Quota, "the forfeited stake stays lost; the new ticket refunds cleanly")
+}
+
+// Live inputs are secrets: a participant polling the replay endpoint mid-duel
+// must be rejected until the duel has finished.
+func testPvPReplayGate(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	base := time.Date(2026, 12, 8, 12, 0, 0, 0, gameZone)
+	pvpTestUser(t, db, 71, 100000)
+	pvpTestUser(t, db, 72, 100000)
+	first, second := pvpPair(t, db, 71, 72, 50000, base)
+	now := base.Add(11 * time.Second)
+	batch := make([]int, 10)
+	view, err := SubmitPvPInput(72, second.ID, 1, 0, batch, false, pvpSigned(second.You.Secret, second.ID, 2, 1, 0, batch, false), now)
+	require.NoError(t, err)
+	require.Equal(t, "playing", view.Status)
+	for _, participant := range []int{71, 72} {
+		_, err = GetPvPReplay(participant, first.ID)
+		require.ErrorIs(t, err, ErrPvPReplayNotReady, "participant %d must not read live inputs", participant)
+	}
+	final, err := SubmitPvPInput(72, second.ID, 2, 10, nil, true, pvpSigned(second.You.Secret, second.ID, 2, 2, 10, nil, true), now.Add(time.Second))
+	require.NoError(t, err)
+	require.Equal(t, "finished", final.Status)
+	replay, err := GetPvPReplay(71, final.ID)
+	require.NoError(t, err)
+	require.Len(t, replay.Inputs, 2)
+	require.True(t, replay.Inputs[1].Quit)
+	_, err = GetPvPReplay(73, final.ID)
+	require.ErrorIs(t, err, ErrPvPNotFound, "outsiders stay rejected even after the duel finishes")
+}
+
+// One poisoned stale-refund row must not starve the later maintenance phases:
+// expired invites are still cancelled and past-deadline duels still settle,
+// and once the poison is gone the next cycle clears the leftover ticket.
+func testPvPMaintenanceResilience(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	base := time.Date(2026, 12, 9, 12, 0, 0, 0, gameZone)
+	pvpTestUser(t, db, 8, 100000)
+	pvpTestUser(t, db, 9, 100000)
+	pvpTestUser(t, db, 17, 100000)
+	pvpTestUser(t, db, 18, 100000)
+	duel, mirror := pvpPair(t, db, 8, 9, 50000, base)
+	require.Equal(t, duel.ID, mirror.ID)
+	created, err := CreatePvPFriendly(17, 50000, base)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&PvPMatch{}).Where("id = ?", created.ID).Update("created_at", base.Add(-11*time.Minute).UnixMilli()).Error)
+	_, queued, err := JoinPvPQueue(18, 50000, base.Add(2*time.Second))
+	require.NoError(t, err)
+	require.True(t, queued)
+	require.NoError(t, db.Model(&PvPQueueEntry{}).Where("user_id = ?", 18).Update("enqueued_at", base.Add(-11*time.Minute).UnixMilli()).Error)
+
+	// Poison only the stale ticket's claim UPDATE, mirroring a permanently
+	// failing refund; the loop must log it and keep processing later phases.
+	armed := true
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register("test:fail_poisoned_pvp_refund", func(tx *gorm.DB) {
+		if armed {
+			if _, ok := tx.Statement.Model.(*PvPQueueEntry); ok {
+				tx.AddError(errors.New("poisoned pvp queue refund"))
+			}
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, db.Callback().Update().Remove("test:fail_poisoned_pvp_refund")) })
+
+	require.NoError(t, MaintainPvP(base.Add(125*time.Second)), "a per-item failure must not abort the maintenance run")
+	var ticket PvPQueueEntry
+	require.NoError(t, db.Where("user_id = ?", 18).First(&ticket).Error)
+	require.Equal(t, "waiting", ticket.Status, "the poisoned refund rolls back and stays retryable")
+	var invite PvPMatch
+	require.NoError(t, db.First(&invite, "id = ?", created.ID).Error)
+	require.Equal(t, "cancelled", invite.Status, "expired invites are still cancelled after a failed refund")
+	var host User
+	require.NoError(t, db.First(&host, 17).Error)
+	require.Equal(t, 100000, host.Quota)
+	var match PvPMatch
+	require.NoError(t, db.First(&match, "id = ?", duel.ID).Error)
+	require.Equal(t, "finished", match.Status, "past-deadline duels are still force-settled")
+	require.Positive(t, match.WinnerSlot)
+
+	// With the poison gone the very next cycle settles the leftover ticket.
+	armed = false
+	require.NoError(t, MaintainPvP(base.Add(126*time.Second)))
+	require.NoError(t, db.Where("user_id = ?", 18).First(&ticket).Error)
+	require.Equal(t, "cancelled", ticket.Status)
+	var refunded User
+	require.NoError(t, db.First(&refunded, 18).Error)
+	require.Equal(t, 100000, refunded.Quota)
 }

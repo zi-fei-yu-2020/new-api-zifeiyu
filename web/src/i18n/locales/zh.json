@@ -7776,6 +7776,7 @@
     "PvP input rejected. Refresh the duel and retry": "PvP 输入被拒绝。请刷新对战后重试",
     "PvP match history": "PvP 对战历史",
     "PvP match not found": "未找到 PvP 对战",
+    "PvP replay is only available after the duel finishes": "PvP 回放仅在对战结束后可用",
     "PvP stake refunded: {{quota}}": "PvP 押注已退还：{{quota}}",
     "Quota change": "额度变化",
     "Ranked": "排位对战",

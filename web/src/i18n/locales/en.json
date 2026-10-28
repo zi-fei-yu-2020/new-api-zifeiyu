@@ -7776,6 +7776,7 @@
     "PvP input rejected. Refresh the duel and retry": "PvP input rejected. Refresh the duel and retry",
     "PvP match history": "PvP match history",
     "PvP match not found": "PvP match not found",
+    "PvP replay is only available after the duel finishes": "PvP replay is only available after the duel finishes",
     "PvP stake refunded: {{quota}}": "PvP stake refunded: {{quota}}",
     "Quota change": "Quota change",
     "Ranked": "Ranked",

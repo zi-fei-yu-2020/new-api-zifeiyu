@@ -20,13 +20,14 @@ import (
 )
 
 var (
-	ErrPvPDisabled = errors.New("PvP duels are currently disabled")
-	ErrPvPStake    = errors.New("Invalid PvP stake")
-	ErrPvPBusy     = errors.New("You already have an active PvP duel or queue entry")
-	ErrPvPQuota    = errors.New("Insufficient quota for the stake")
-	ErrPvPInput    = errors.New("PvP input rejected")
-	ErrPvPNotFound = errors.New("PvP match not found")
-	ErrPvPInvite   = errors.New("PvP invite is no longer available")
+	ErrPvPDisabled       = errors.New("PvP duels are currently disabled")
+	ErrPvPStake          = errors.New("Invalid PvP stake")
+	ErrPvPBusy           = errors.New("You already have an active PvP duel or queue entry")
+	ErrPvPQuota          = errors.New("Insufficient quota for the stake")
+	ErrPvPInput          = errors.New("PvP input rejected")
+	ErrPvPNotFound       = errors.New("PvP match not found")
+	ErrPvPInvite         = errors.New("PvP invite is no longer available")
+	ErrPvPReplayNotReady = errors.New("PvP replay is only available after the duel finishes")
 )
 
 const pvpQueueWaitLimit = 10 * time.Minute
@@ -190,8 +191,10 @@ func pvpDebitStake(tx *gorm.DB, userID, stake int) error {
 }
 
 // creditPvP credits quota inside a transaction behind an idempotent ledger
-// row. The wallet cap can truncate a credit; the missing remainder lands in a
-// separate overflow ledger row with a loud log line instead of vanishing.
+// row. The wallet cap can truncate a credit, and a payee deleted (soft or
+// hard) while the stake was escrowed can no longer be credited at all; in
+// both cases the missing remainder lands in a separate overflow ledger row
+// with a loud log line instead of vanishing, so settlement always completes.
 func creditPvP(tx *gorm.DB, key, overflowKey, matchID string, userID, amount int, kind string, now time.Time) (int, error) {
 	ledger := PvPLedger{ID: key, MatchID: matchID, UserID: userID, Amount: amount, Kind: kind, CreatedAt: now.UnixMilli()}
 	result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&ledger)
@@ -201,26 +204,39 @@ func creditPvP(tx *gorm.DB, key, overflowKey, matchID string, userID, amount int
 	if result.RowsAffected == 0 {
 		return 0, nil // already settled by an earlier run
 	}
+	credit := 0
+	missing := false
 	var user User
-	if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
+	err := lockForUpdate(tx).First(&user, userID).Error
+	if err == nil {
+		credit = min(amount, max(0, common.MaxWalletQuota-user.Quota))
+		if credit > 0 {
+			result = tx.Model(&User{}).Where("id = ? AND quota <= ?", userID, common.MaxWalletQuota-credit).Update("quota", gorm.Expr("quota + ?", credit))
+			if result.Error != nil {
+				return 0, result.Error
+			}
+			if result.RowsAffected != 1 {
+				return 0, ErrPvPQuota
+			}
+		}
+	} else if errors.Is(err, gorm.ErrRecordNotFound) {
+		// Soft- and hard-deleted payees are both invisible to First; failing
+		// here would roll settlement back forever and wedge the match, so the
+		// whole credit is recorded as overflow below instead.
+		missing = true
+	} else {
 		return 0, err
-	}
-	credit := min(amount, max(0, common.MaxWalletQuota-user.Quota))
-	if credit > 0 {
-		result = tx.Model(&User{}).Where("id = ? AND quota <= ?", userID, common.MaxWalletQuota-credit).Update("quota", gorm.Expr("quota + ?", credit))
-		if result.Error != nil {
-			return 0, result.Error
-		}
-		if result.RowsAffected != 1 {
-			return 0, ErrPvPQuota
-		}
 	}
 	if overflow := amount - credit; overflow > 0 {
 		row := PvPLedger{ID: overflowKey, MatchID: matchID, UserID: userID, Amount: overflow, Kind: "overflow", CreatedAt: now.UnixMilli()}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 			return 0, err
 		}
-		common.SysError(common.LogText("pvp credit %d truncated to %d for user %d: wallet quota cap reached", amount, credit, userID))
+		if missing {
+			common.SysError(common.LogText("pvp credit %d for user %d unapplied: account no longer exists", amount, userID))
+		} else {
+			common.SysError(common.LogText("pvp credit %d truncated to %d for user %d: wallet quota cap reached", amount, credit, userID))
+		}
 	}
 	return credit, nil
 }
@@ -820,11 +836,20 @@ func buildPvPMatchView(tx *gorm.DB, match *PvPMatch, userID int, now time.Time) 
 	}
 	opponentID := match.playerID(3 - slot)
 	if opponentID != 0 {
+		view.Opponent = PvPOpponentView{ID: opponentID}
 		var opponent User
-		if err := tx.First(&opponent, opponentID).Error; err != nil {
+		err := tx.First(&opponent, opponentID).Error
+		switch {
+		case err == nil:
+			view.Opponent.Name = opponent.Username
+			view.Opponent.DisplayName = opponent.DisplayName
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			// A soft- or hard-deleted opponent renders as a placeholder, as in
+			// the match list, instead of failing a money-path transaction.
+			view.Opponent.DisplayName = "Deleted account"
+		default:
 			return nil, err
 		}
-		view.Opponent = PvPOpponentView{ID: opponentID, Name: opponent.Username, DisplayName: opponent.DisplayName}
 	}
 	if match.StateJSON != "" {
 		state := &tokengame.DuelState{}
@@ -1010,7 +1035,8 @@ type PvPReplayView struct {
 
 // GetPvPReplay returns the full input history, each batch tagged with its
 // arrival time and insertion order so clients can replay the authoritative
-// execution sequence; only duelists can fetch their own matches.
+// execution sequence; only duelists can fetch their own replays, and only
+// after the duel has finished.
 func GetPvPReplay(userID int, matchID string) (*PvPReplayView, error) {
 	var match PvPMatch
 	if err := DB.Where("id = ?", matchID).First(&match).Error; err != nil {
@@ -1021,6 +1047,11 @@ func GetPvPReplay(userID int, matchID string) (*PvPReplayView, error) {
 	}
 	if match.Player1ID != userID && match.Player2ID != userID {
 		return nil, ErrPvPNotFound
+	}
+	if match.Status != "finished" {
+		// Live inputs are secrets: serving them mid-duel would leak the
+		// opponent's just-submitted moves, so only a finished duel may replay.
+		return nil, ErrPvPReplayNotReady
 	}
 	rows := []PvPReplayPlayer{
 		{Slot: 1, UserID: match.Player1ID, Score: match.Player1Score},
@@ -1154,7 +1185,8 @@ func MaintainPvP(now time.Time) error {
 	}
 	for i := range stale {
 		if err := refundQueueEntry(&stale[i], now); err != nil {
-			return err
+			// One poisoned ticket must not starve the later phases.
+			common.SysError(common.LogText("pvp stale queue refund failed for entry %d: %s", stale[i].ID, err.Error()))
 		}
 	}
 	var expired []PvPMatch
@@ -1163,7 +1195,7 @@ func MaintainPvP(now time.Time) error {
 	}
 	for i := range expired {
 		if err := cancelPvPInvite(&expired[i], now); err != nil {
-			return err
+			common.SysError(common.LogText("pvp expired invite cancel failed for match %s: %s", expired[i].ID, err.Error()))
 		}
 	}
 	deadline := int64(tokengame.DuelDuration+tokengame.MaxInputBatch+30) * tokengame.TickMillis
@@ -1173,7 +1205,7 @@ func MaintainPvP(now time.Time) error {
 	}
 	for i := range running {
 		if err := forceFinishPvP(&running[i], now); err != nil {
-			return err
+			common.SysError(common.LogText("pvp force finish failed for match %s: %s", running[i].ID, err.Error()))
 		}
 	}
 	return nil

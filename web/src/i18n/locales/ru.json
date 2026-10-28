@@ -7776,6 +7776,7 @@
     "PvP input rejected. Refresh the duel and retry": "PvP-ввод отклонён. Обновите дуэль и повторите",
     "PvP match history": "История PvP-дуэлей",
     "PvP match not found": "PvP-матч не найден",
+    "PvP replay is only available after the duel finishes": "Повтор PvP доступен только после окончания дуэли",
     "PvP stake refunded: {{quota}}": "PvP-ставка возвращена: {{quota}}",
     "Quota change": "Изменение квоты",
     "Ranked": "Рейтинговый",

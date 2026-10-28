@@ -7776,6 +7776,7 @@
     "PvP input rejected. Refresh the duel and retry": "PvP 入力が拒否されました。デュエルを更新して再試行してください",
     "PvP match history": "PvP 対戦履歴",
     "PvP match not found": "PvP マッチが見つかりません",
+    "PvP replay is only available after the duel finishes": "PvP リプレイはデュエル終了後にのみ閲覧できます",
     "PvP stake refunded: {{quota}}": "PvP 賭け金が返金されました: {{quota}}",
     "Quota change": "クォータの変動",
     "Ranked": "ランク",
