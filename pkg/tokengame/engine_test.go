@@ -17,6 +17,7 @@ func TestLegacyReplayCompatibility(t *testing.T) {
 		State  State
 	}
 	require.NoError(t, common.Unmarshal(raw, &fixtures))
+	require.GreaterOrEqual(t, len(fixtures), 3)
 	for _, fixture := range fixtures {
 		state := New(fixture.Seed)
 		state.Version = 1
@@ -108,6 +109,7 @@ func TestSprintReplayCompatibility(t *testing.T) {
 		State  State
 	}
 	require.NoError(t, common.Unmarshal(raw, &fixtures))
+	require.GreaterOrEqual(t, len(fixtures), 3)
 	for _, fixture := range fixtures {
 		state := New(fixture.Seed)
 		state.Version = fixture.State.Version
@@ -201,6 +203,7 @@ func TestCombatReplayCompatibility(t *testing.T) {
 		State  State
 	}
 	require.NoError(t, common.Unmarshal(raw, &fixtures))
+	require.GreaterOrEqual(t, len(fixtures), 3)
 	for _, fixture := range fixtures {
 		s := New(fixture.Seed)
 		for _, input := range fixture.Inputs {

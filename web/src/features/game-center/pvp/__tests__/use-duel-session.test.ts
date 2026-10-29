@@ -128,6 +128,9 @@ it('recovers with the authoritative duel after a rejected packet', async () => {
     .mockRejectedValueOnce(
       new Error('PvP input rejected. Refresh the duel and retry')
     )
+    .mockImplementation(async (_id, _seq, from, inputs) =>
+      authoritative(initial, from, inputs)
+    )
   const recovered = authoritative(initial, 0, [])
   const fetchMatch = vi
     .spyOn(pvpApi, 'getPvPMatch')
@@ -141,9 +144,6 @@ it('recovers with the authoritative duel after a rejected packet', async () => {
     await vi.advanceTimersByTimeAsync(1300)
   })
   expect(submit).toHaveBeenCalledOnce()
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(700)
-  })
   // The next synchronization re-installs the authoritative duel instead of
   // replaying the rejected sequence number.
   expect(fetchMatch).toHaveBeenCalled()
@@ -178,6 +178,52 @@ it('resigns with a final quit batch', async () => {
   const finalCall = submit.mock.calls.at(-1)
   expect(finalCall?.[4]).toBe(true)
   expect(onFinish).toHaveBeenCalled()
+  expect(result.current.match?.status).toBe('finished')
+})
+
+it('keeps quit requested when recovery installs the same match while quit awaits', async () => {
+  const initial = playableMatch()
+  const recovered = authoritative(initial, 0, [])
+  let resolveRecovery!: (match: PvPMatchView) => void
+  vi.spyOn(pvpApi, 'getPvPMatch').mockImplementation(
+    () =>
+      new Promise<PvPMatchView>((resolve) => {
+        resolveRecovery = resolve
+      })
+  )
+  const finished = authoritative(initial, 0, [])
+  finished.status = 'finished'
+  finished.winner_slot = 2
+  const submit = vi
+    .spyOn(pvpApi, 'submitPvPInput')
+    .mockRejectedValueOnce(new Error('Rejected packet'))
+    .mockImplementation(async (_id, _seq, from, inputs, quit) =>
+      quit ? finished : authoritative(initial, from, inputs)
+    )
+  const { result } = renderHook(() => useDuelSession(vi.fn()))
+  act(() => {
+    result.current.install(initial)
+  })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1200)
+  })
+  expect(pvpApi.getPvPMatch).toHaveBeenCalledOnce()
+
+  let quitting!: Promise<void>
+  act(() => {
+    quitting = result.current.quit()
+  })
+  await act(async () => {
+    resolveRecovery(recovered)
+    await quitting
+  })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600)
+  })
+
+  // quit() began while the recovery GET was awaiting. Its same-match install
+  // must not clear the quit flag before the following input submission.
+  expect(submit.mock.calls.at(-1)?.[4]).toBe(true)
   expect(result.current.match?.status).toBe('finished')
 })
 

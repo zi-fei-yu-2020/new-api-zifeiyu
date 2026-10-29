@@ -146,7 +146,7 @@ func pvpSeed() int {
 }
 
 func pvpInviteCode() string {
-	buf := make([]byte, 4)
+	buf := make([]byte, 8)
 	_, _ = rand.Read(buf)
 	return hex.EncodeToString(buf)
 }
@@ -1079,13 +1079,18 @@ func GetPvPReplay(userID int, matchID string) (*PvPReplayView, error) {
 			continue
 		}
 		var user User
-		if err := DB.First(&user, rows[i].UserID).Error; err != nil {
+		err := DB.First(&user, rows[i].UserID).Error
+		switch {
+		case err == nil:
+			if user.DisplayName != "" {
+				users[rows[i].UserID] = user.DisplayName
+			} else {
+				users[rows[i].UserID] = user.Username
+			}
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			users[rows[i].UserID] = "Deleted account"
+		default:
 			return nil, err
-		}
-		if user.DisplayName != "" {
-			users[rows[i].UserID] = user.DisplayName
-		} else {
-			users[rows[i].UserID] = user.Username
 		}
 	}
 	for i := range rows {
@@ -1170,7 +1175,7 @@ func cancelPvPInvite(match *PvPMatch, now time.Time) error {
 func refundQueueEntry(entry *PvPQueueEntry, now time.Time) error {
 	var events []pvpLogEvent
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ?", entry.ID, "waiting").Update("status", "cancelled")
+		claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ? AND enqueued_at = ?", entry.ID, "waiting", entry.EnqueuedAt).Update("status", "cancelled")
 		if claim.Error != nil || claim.RowsAffected == 0 {
 			return claim.Error
 		}

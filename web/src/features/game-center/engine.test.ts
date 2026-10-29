@@ -24,6 +24,12 @@ import sprintFixtures from '../../../../pkg/tokengame/testdata/sprint-replays.js
 import { isDone, newGame, step } from './engine'
 
 describe('authoritative game replay contract', () => {
+  it('keeps at least three replay fixtures for each solo engine version', () => {
+    expect(fixtures.length).toBeGreaterThanOrEqual(3)
+    expect(sprintFixtures.length).toBeGreaterThanOrEqual(3)
+    expect(combatFixtures.length).toBeGreaterThanOrEqual(3)
+  })
+
   for (const fixture of [...fixtures, ...sprintFixtures, ...combatFixtures]) {
     it(`matches the Go replay for seed ${fixture.seed} after ${fixture.inputs.length} inputs`, () => {
       const state = newGame(fixture.seed, fixture.state.version)

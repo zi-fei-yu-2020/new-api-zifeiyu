@@ -456,3 +456,38 @@ export function replayDuelTo(
   advanceDuel(state, target, streams[0], streams[1])
   return state
 }
+
+// A replay cursor keeps ordinary forward playback incremental. Arrival ticks,
+// seeks and the settled end frame still use replayDuelTo so late-input rollback
+// and resignation semantics remain identical to a full authoritative replay.
+export function createDuelReplayCursor(
+  seed: number,
+  startedAt: number,
+  batches: DuelInputBatch[]
+): (target: number) => DuelState {
+  let state: DuelState | null = null
+  let streams: [number[], number[]] = [[], []]
+  return (target: number) => {
+    const hasArrival = batches.some(
+      (batch) => replayAllowedTicks(startedAt, batch.received_at) === target
+    )
+    if (
+      state &&
+      target === state.tick + 1 &&
+      target < DUEL_DURATION &&
+      !state.finished &&
+      !hasArrival
+    ) {
+      advanceDuel(state, target, streams[0], streams[1])
+      return state
+    }
+
+    state = replayDuelTo(seed, startedAt, batches, target)
+    streams = buildDuelStreams(
+      batches.filter(
+        (batch) => replayAllowedTicks(startedAt, batch.received_at) <= target
+      )
+    )
+    return state
+  }
+}

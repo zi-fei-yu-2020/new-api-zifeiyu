@@ -22,6 +22,7 @@ import fixtures from '../../../../../../pkg/tokengame/testdata/duel-replays.json
 import {
   advanceDuel,
   buildDuelStreams,
+  createDuelReplayCursor,
   DUEL_DURATION,
   DUEL_TICK_MS,
   forfeit,
@@ -180,4 +181,70 @@ it('clamps the cursor to the submitted stream length while the clock advances', 
   expect(state.tick).toBe(50)
   expect(state.players[0].cursor).toBe(50)
   expect(state.players[1].cursor).toBe(0)
+})
+
+it('matches full replay while incrementally advancing across arrivals and late inputs', () => {
+  const seed = 42
+  const startedAt = 1_000_000
+  const batches: DuelInputBatch[] = [
+    {
+      id: 1,
+      player: 1,
+      seq: 1,
+      from_tick: 0,
+      inputs: [3, 3],
+      received_at: startedAt + 5 * DUEL_TICK_MS,
+      quit: false,
+    },
+    {
+      id: 2,
+      player: 2,
+      seq: 1,
+      from_tick: 0,
+      inputs: [5, 5],
+      received_at: startedAt + 12 * DUEL_TICK_MS,
+      quit: false,
+    },
+    {
+      id: 3,
+      player: 1,
+      seq: 2,
+      from_tick: 2,
+      inputs: [19],
+      received_at: startedAt + 20 * DUEL_TICK_MS,
+      quit: false,
+    },
+  ]
+  const seek = createDuelReplayCursor(seed, startedAt, batches)
+  let previous = seek(0)
+
+  for (let target = 1; target <= 25; target++) {
+    const current = seek(target)
+    expect(current).toEqual(replayDuelTo(seed, startedAt, batches, target))
+    if ([5, 12, 20].includes(target)) {
+      expect(current).not.toBe(previous)
+    } else {
+      // Ordinary forward playback advances the cached world in place instead
+      // of rebuilding every preceding tick from tick zero.
+      expect(current).toBe(previous)
+    }
+    previous = current
+  }
+
+  const backward = seek(10)
+  expect(backward).toEqual(replayDuelTo(seed, startedAt, batches, 10))
+  expect(backward).not.toBe(previous)
+  const discontinuous = seek(18)
+  expect(discontinuous).toEqual(replayDuelTo(seed, startedAt, batches, 18))
+  expect(discontinuous).not.toBe(backward)
+})
+
+it('uses a full replay for the settled end frame after a forward seek', () => {
+  const startedAt = 1_000_000
+  const seek = createDuelReplayCursor(11, startedAt, [])
+  const beforeEnd = seek(DUEL_DURATION - 1)
+  const end = seek(DUEL_DURATION)
+
+  expect(end).toEqual(replayDuelTo(11, startedAt, [], DUEL_DURATION))
+  expect(end).not.toBe(beforeEnd)
 })

@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { GameCenter } from '@/features/game-center'
-import { getGameStatus } from '@/features/game-center/api'
+import { gameStatusQueryOptions } from '@/features/game-center/query-options'
 import { resolveAuthentication } from '@/lib/auth-session'
 import { isWorkbenchEnabledForGuard } from '@/lib/nav-modules'
 import { useAuthStore } from '@/stores/auth-store'
@@ -32,7 +32,12 @@ export const Route = createFileRoute('/games/')({
       throw redirect({ to: '/sign-in', search: { redirect: location.href } })
     }
     if (!(await isWorkbenchEnabledForGuard(context.queryClient, '/games'))) {
-      const state = await getGameStatus()
+      let state
+      try {
+        state = await context.queryClient.fetchQuery(gameStatusQueryOptions)
+      } catch {
+        return
+      }
       if (state.run?.status !== 'running') throw redirect({ to: '/dashboard' })
     }
   },

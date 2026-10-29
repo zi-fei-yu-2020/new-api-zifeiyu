@@ -34,13 +34,17 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { getSelf } from '@/lib/api'
 import { formatNumber, formatQuota } from '@/lib/format'
-import { requireServerSuccess } from '@/lib/server-error-message'
+import {
+  getServerErrorSources,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { getGameRewards, getGameStatus, startGame } from './api'
+import { getGameRewards, startGame, type GameStatus } from './api'
 import { Arena } from './arena'
 import { gameDuration, upgradePending } from './engine'
 import { Leaderboard } from './leaderboard'
+import { gameStatusQueryOptions } from './query-options'
 import { UpgradePanel } from './upgrade-panel'
 import { useGameSession } from './use-game-session'
 import { WeeklyRewards } from './weekly-rewards'
@@ -59,13 +63,7 @@ function countdown(milliseconds: number) {
 export function DailyChallenge() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const status = useQuery({
-    queryKey: ['game-status'],
-    queryFn: ({ signal }) => getGameStatus(signal),
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    staleTime: 0,
-  })
+  const status = useQuery(gameStatusQueryOptions)
   const rewards = useQuery({
     queryKey: ['game-rewards'],
     queryFn: getGameRewards,
@@ -129,17 +127,33 @@ export function DailyChallenge() {
   const start = useMutation({
     mutationFn: startGame,
     onSuccess: (next) => {
+      queryClient.setQueryData<GameStatus>(['game-status'], (current) =>
+        current ? { ...current, run: next } : current
+      )
       session.install(next)
       setConfirm(null)
     },
     onError: (error: Error) => {
+      const sources = getServerErrorSources(error)
       if (
-        error.message === 'The daily reward budget cannot cover another run'
+        sources.some(
+          (source) =>
+            source.message_key ===
+              'The daily reward budget cannot cover another run' ||
+            source.message ===
+              'The daily reward budget cannot cover another run'
+        )
       ) {
         toast.error(t('The daily reward budget cannot cover another run'))
         return
       }
-      if (error.message === 'The daily challenge is currently closed') {
+      if (
+        sources.some(
+          (source) =>
+            source.message_key === 'The daily challenge is currently closed' ||
+            source.message === 'The daily challenge is currently closed'
+        )
+      ) {
         toast.error(t('The daily challenge is currently closed'))
         return
       }
@@ -357,7 +371,7 @@ export function DailyChallenge() {
             <Arena
               state={session.state}
               input={input}
-              active={!!run}
+              active={active}
               controlsDisabled={!!canUpgrade}
             />
             {!active && (

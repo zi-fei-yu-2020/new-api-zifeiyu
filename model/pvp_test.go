@@ -177,6 +177,34 @@ func testPvPMatchmaking(t *testing.T, db *gorm.DB) {
 	var entry PvPQueueEntry
 	require.NoError(t, db.Where("user_id = ?", 7).First(&entry).Error)
 	require.Equal(t, "cancelled", entry.Status)
+
+	// A maintenance snapshot from an already refunded stint must not cancel the
+	// reused row after the player queues again, nor swallow the new escrow.
+	staleAt := base.Add(4 * time.Second)
+	_, queued, err = JoinPvPQueue(7, 50000, staleAt)
+	require.NoError(t, err)
+	require.True(t, queued)
+	var stale PvPQueueEntry
+	require.NoError(t, db.Where("user_id = ?", 7).First(&stale).Error)
+	require.NoError(t, LeavePvPQueue(7, staleAt.Add(time.Second)))
+	_, queued, err = JoinPvPQueue(7, 50000, staleAt.Add(2*time.Second))
+	require.NoError(t, err)
+	require.True(t, queued)
+	var current PvPQueueEntry
+	require.NoError(t, db.Where("user_id = ?", 7).First(&current).Error)
+	require.Equal(t, stale.ID, current.ID)
+	require.NotEqual(t, stale.EnqueuedAt, current.EnqueuedAt)
+	require.NoError(t, refundQueueEntry(&stale, staleAt.Add(3*time.Second)))
+	require.NoError(t, db.First(&current, current.ID).Error)
+	assert.Equal(t, "waiting", current.Status)
+	assert.Equal(t, staleAt.Add(2*time.Second).UnixMilli(), current.EnqueuedAt)
+	require.NoError(t, db.First(&refunded, 7).Error)
+	assert.Equal(t, 50000, refunded.Quota, "the current stake remains escrowed")
+	require.NoError(t, db.Model(&PvPLedger{}).Where("user_id = ? AND kind = ?", 7, "refund").Count(&refunds).Error)
+	assert.EqualValues(t, 3, refunds, "the stale refund adds no ledger entry")
+	require.NoError(t, LeavePvPQueue(7, staleAt.Add(4*time.Second)))
+	require.NoError(t, db.First(&refunded, 7).Error)
+	require.Equal(t, 100000, refunded.Quota)
 }
 
 func testPvPInputs(t *testing.T, db *gorm.DB) {
@@ -309,7 +337,8 @@ func testPvPFriendly(t *testing.T, db *gorm.DB) {
 	require.NoError(t, err)
 	require.Equal(t, "invited", created.Status)
 	require.NotNil(t, created.InviteCode)
-	require.NotEmpty(t, *created.InviteCode)
+	require.Len(t, *created.InviteCode, 16)
+	assert.Regexp(t, "^[0-9a-f]{16}$", *created.InviteCode)
 	require.Empty(t, created.Opponent.ID, "no opponent until the code is redeemed")
 	var host User
 	require.NoError(t, db.First(&host, 21).Error)
@@ -639,6 +668,11 @@ func testPvPDeletedPayee(t *testing.T, db *gorm.DB) {
 	require.Equal(t, "finished", status.Match.Status)
 	require.Equal(t, 62, status.Match.Opponent.ID)
 	require.Equal(t, "Deleted account", status.Match.Opponent.DisplayName)
+	replay, err := GetPvPReplay(61, first.ID)
+	require.NoError(t, err)
+	require.Len(t, replay.Players, 2)
+	assert.Equal(t, "Deleted account", replay.Players[1].Name)
+	assert.Equal(t, survivor.DisplayName, replay.Players[0].Name, "existing participants keep their names")
 	// The survivor is free to duel again: no permanent active-duel lock.
 	_, queued, err := JoinPvPQueue(61, 50000, now.Add(time.Second))
 	require.NoError(t, err)

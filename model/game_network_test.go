@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/tokengame"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func testGameNetworkRecovery(t *testing.T, now time.Time) {
@@ -91,4 +92,72 @@ func testGameNetworkRecovery(t *testing.T, now time.Time) {
 	require.NoError(t, MaintainGames(expiredAt.Add(time.Minute)))
 	require.NoError(t, DB.First(&active, "id = ?", run.ID).Error)
 	require.Equal(t, finishedAt, active.FinishedAt)
+}
+
+func testGameMaintenanceIsolation(t *testing.T) {
+	userIDs := []int{780, 781, 782, 783}
+	for _, user := range []User{
+		{Id: 780, Username: "maintenance-future", Status: common.UserStatusEnabled, AffCode: "maintenance-future"},
+		{Id: 781, Username: "maintenance-advance", Status: common.UserStatusEnabled, AffCode: "maintenance-advance"},
+		{Id: 782, Username: "maintenance-valid", Status: common.UserStatusEnabled, AffCode: "maintenance-valid"},
+		{Id: 783, Username: "maintenance-winner", Status: common.UserStatusEnabled, AffCode: "maintenance-winner"},
+	} {
+		require.NoError(t, DB.Create(&user).Error)
+	}
+	t.Cleanup(func() {
+		require.NoError(t, DB.Where("user_id IN ?", userIDs).Delete(&GameReward{}).Error)
+		require.NoError(t, DB.Where("user_id IN ?", userIDs).Delete(&GameRun{}).Error)
+		require.NoError(t, DB.Where("id IN ?", []int{780, 781, 782, 783}).Delete(&User{}).Error)
+		require.NoError(t, DB.Where("id IN ?", []string{"day:2027-02-01", "week:2027-01-25", "week:not-a-date"}).Delete(&GamePeriod{}).Error)
+	})
+
+	started := time.Date(2027, 2, 1, 12, 0, 0, 0, gameZone)
+	finalState := tokengame.New(42)
+	finalState.Tick = tokengame.SprintDuration - 1
+	finalState.ClockTick = finalState.ClockLimit() - 1
+	finalState.Upgrades = 3
+	finalState.HP, finalState.MaxHP = 1000, 1000
+	validJSON, err := common.Marshal(finalState)
+	require.NoError(t, err)
+	futureState := finalState
+	futureState.Version = tokengame.Version + 1
+	futureJSON, err := common.Marshal(futureState)
+	require.NoError(t, err)
+	for _, run := range []GameRun{
+		{ID: "maintenance-future-run", UserID: 780, Day: "2027-02-01", Week: "2027-02-01", StartedAt: started.UnixMilli(), Status: "running", StateJSON: string(futureJSON), RewardVersion: 1},
+		{ID: "maintenance-advance-run", UserID: 781, Day: "2027-02-01", Week: "2027-02-01", StartedAt: started.Add(time.Second).UnixMilli(), Status: "running", StateJSON: string(validJSON), RewardVersion: 2},
+		{ID: "maintenance-valid-run", UserID: 782, Day: "2027-02-01", Week: "2027-02-01", StartedAt: started.Add(2 * time.Second).UnixMilli(), Status: "running", StateJSON: string(validJSON), RewardVersion: 1},
+		{ID: "maintenance-weekly-winner", UserID: 783, Day: "2027-01-25", Week: "2027-01-25", StartedAt: started.AddDate(0, 0, -7).UnixMilli(), FinishedAt: started.AddDate(0, 0, -7).UnixMilli(), Status: "survived", StateJSON: "{}", Score: 100, RewardVersion: 1},
+	} {
+		require.NoError(t, DB.Create(&run).Error)
+	}
+	// The version-two run has no token period, forcing AdvanceGame to roll back.
+	// The invalid week independently forces one settlement failure.
+	require.NoError(t, DB.Create(&GamePeriod{ID: "day:2027-02-01"}).Error)
+	require.NoError(t, DB.Create(&GamePeriod{ID: "week:2027-01-25", Budget: 1000}).Error)
+	require.NoError(t, DB.Create(&GamePeriod{ID: "week:not-a-date", Budget: 1000}).Error)
+
+	err = MaintainGames(started.AddDate(0, 0, 14))
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrGameInput)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	require.Contains(t, err.Error(), "maintenance-future-run")
+	require.Contains(t, err.Error(), "maintenance-advance-run")
+	require.Contains(t, err.Error(), "not-a-date")
+
+	var valid GameRun
+	require.NoError(t, DB.First(&valid, "id = ?", "maintenance-valid-run").Error)
+	require.Equal(t, "survived", valid.Status, "earlier bad runs must not block a later expired run")
+	for _, id := range []string{"maintenance-future-run", "maintenance-advance-run"} {
+		var poisoned GameRun
+		require.NoError(t, DB.First(&poisoned, "id = ?", id).Error)
+		require.Equal(t, "running", poisoned.Status, "failed runs must remain available for diagnosis and retry")
+	}
+	var settled GamePeriod
+	require.NoError(t, DB.First(&settled, "id = ?", "week:2027-01-25").Error)
+	require.True(t, settled.Settled, "run and other-period failures must not block an eligible week")
+	require.Equal(t, 300, settled.Spent)
+	var winner User
+	require.NoError(t, DB.First(&winner, 783).Error)
+	require.Equal(t, 300, winner.Quota)
 }

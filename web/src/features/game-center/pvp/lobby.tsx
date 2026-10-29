@@ -16,7 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { Move, Swords, Timer, Trophy, Users, Zap } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -26,6 +31,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { toIntlLocale } from '@/i18n/languages'
 import {
   formatNumber,
   formatQuota,
@@ -121,6 +127,14 @@ export function PvpLobby() {
       toast.error(t('PvP invite code has expired'))
       return
     }
+    if (
+      view &&
+      sessionMatch?.id === view.id &&
+      sessionMatch.status === 'finished' &&
+      view.status !== 'finished'
+    ) {
+      return
+    }
     if (!view || view.id === dismissed) return
     if (sessionMatch?.id === view.id && sessionMatch.status === view.status) {
       return
@@ -210,7 +224,8 @@ function DuelStage({
   session: ReturnType<typeof useDuelSession>
   onExit: () => void
 }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [confirmQuit, setConfirmQuit] = useState(false)
   const { display, input, connection } = session
   const mySlot = match.you.slot
@@ -255,7 +270,7 @@ function DuelStage({
         <div className='p-3 sm:px-5'>
           <p className='text-muted-foreground text-[11px]'>{t('Your score')}</p>
           <p className='mt-1 font-mono text-xl font-medium sm:text-2xl'>
-            {formatNumber(me.score)}
+            {formatNumber(me.score, locale)}
           </p>
         </div>
         <div className='p-3 sm:px-5'>
@@ -271,7 +286,7 @@ function DuelStage({
             {t('Opponent score')}
           </p>
           <p className='mt-1 font-mono text-xl font-medium sm:text-2xl'>
-            {formatNumber(opponent.score)}
+            {formatNumber(opponent.score, locale)}
           </p>
         </div>
       </div>
@@ -682,12 +697,14 @@ function FriendlyPanel({
 }
 
 function HistoryPanel() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
   const [replayId, setReplayId] = useState<string | null>(null)
   const matches = useQuery({
     queryKey: ['pvp-matches', page],
     queryFn: ({ signal }) => listPvPMatches(page, 10, signal),
+    placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
     meta: { errorToast: false },
   })
@@ -700,6 +717,11 @@ function HistoryPanel() {
         <p className='mt-4 text-sm' role='alert'>
           {t('Unable to load PvP matches')}
         </p>
+      )
+    }
+    if (matches.isPending) {
+      return (
+        <p className='text-muted-foreground mt-4 text-sm'>{t('Loading...')}</p>
       )
     }
     if (items.length === 0) {
@@ -724,8 +746,9 @@ function HistoryPanel() {
                 </span>
               </p>
               <p className='text-muted-foreground mt-0.5 font-mono text-xs'>
-                {formatNumber(item.my_score)} :{' '}
-                {formatNumber(item.opponent_score)} · {formatQuota(item.stake)}
+                {formatNumber(item.my_score, locale)} :{' '}
+                {formatNumber(item.opponent_score, locale)} ·{' '}
+                {formatQuota(item.stake)}
               </p>
             </div>
             <div className='flex items-center gap-2'>
@@ -762,7 +785,7 @@ function HistoryPanel() {
       <div className='flex items-center justify-between text-sm font-medium'>
         <span>{t('PvP match history')}</span>
         <span className='text-muted-foreground text-xs font-normal'>
-          {formatNumber(total)} {t('duels')}
+          {formatNumber(total, locale)} {t('duels')}
         </span>
       </div>
       {replayId ? (

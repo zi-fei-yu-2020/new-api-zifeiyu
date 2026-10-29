@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type { GameState } from './engine'
 
@@ -93,9 +94,7 @@ export type Rank = {
 type Envelope<T> = { success: boolean; data: T; message?: string }
 const path = '/api/user/game'
 function unwrap<T>(response: Envelope<T>): T {
-  if (!response.success) {
-    throw new Error(response.message || 'Unable to load the daily challenge')
-  }
+  requireServerSuccess(response)
   return response.data
 }
 export const getGameStatus = (signal?: AbortSignal) =>

@@ -73,11 +73,15 @@ export function useDuelSession(onFinish: () => void) {
   const install = useCallback(
     (next: PvPMatchView | null) => {
       cancelSynchronization()
+      const preserveQuit =
+        quitRequested.current &&
+        next?.status === 'playing' &&
+        next.id === session.current?.id
       if (next?.id !== session.current?.id || next?.status !== 'playing') {
         input.current = { direction: 0, dash: false, upgrade: 0 }
       }
       session.current = next
-      quitRequested.current = false
+      quitRequested.current = preserveQuit
       recoveryRequested.current = false
       slot.current = next?.you.slot ?? 1
       secret.current = next?.you.secret ?? ''

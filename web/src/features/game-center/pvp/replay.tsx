@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { Pause, Play, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -29,10 +29,10 @@ import { useAuthStore } from '@/stores/auth-store'
 import { getPvPReplay } from './api'
 import { DuelArena } from './duel-arena'
 import {
+  createDuelReplayCursor,
   DUEL_DURATION,
   DUEL_TICK_MS,
   newDuel,
-  replayDuelTo,
   type DuelState,
 } from './duel-engine'
 
@@ -42,38 +42,45 @@ type Props = { matchId: string; onClose: () => void }
 
 // The replay viewer rebuilds the duel from the recorded batches with the same
 // deterministic engine, replaying them in the server's arrival order so the
-// rebuilt outcome matches the settled result; scrubbing just re-runs the
-// simulation up to the requested tick.
+// rebuilt outcome matches the settled result. A replay cursor advances ordinary
+// forward playback incrementally and falls back to full replay for scrubbing.
 export function DuelReplay({ matchId, onClose }: Props) {
   const { t } = useTranslation()
   const replay = useQuery({
     queryKey: ['pvp-replay', matchId],
     queryFn: ({ signal }) => getPvPReplay(matchId, signal),
+    meta: { errorToast: false },
   })
   const userId = useAuthStore((state) => state.auth.user?.id)
   const [speed, setSpeed] = useState(1)
   const [playing, setPlaying] = useState(false)
   const [tick, setTick] = useState(0)
   const state = useRef<DuelState>(newDuel(0))
-
-  const seek = useCallback(
-    (target: number) => {
-      if (!replay.data) return
-      const next = replayDuelTo(
-        replay.data.seed,
-        replay.data.started_at,
-        replay.data.inputs,
-        target
-      )
-      state.current = next
-      setTick(next.tick)
-    },
+  const cursor = useMemo(
+    () =>
+      replay.data
+        ? createDuelReplayCursor(
+            replay.data.seed,
+            replay.data.started_at,
+            replay.data.inputs
+          )
+        : null,
     [replay.data]
   )
 
+  const seek = useCallback(
+    (target: number) => {
+      if (!cursor) return
+      const next = cursor(target)
+      state.current = next
+      setTick(next.tick)
+    },
+    [cursor]
+  )
+
   useEffect(() => {
-    if (replay.data) seek(0)
-  }, [replay.data, seek])
+    if (cursor) seek(0)
+  }, [cursor, seek])
 
   useEffect(() => {
     if (!playing || !replay.data) return

@@ -697,6 +697,7 @@ func SettleGameWeek(week string, now time.Time) error {
 	return err
 }
 func MaintainGames(now time.Time) error {
+	var maintenanceErrors []error
 	var runs []GameRun
 	if err := DB.Where("status = ? AND started_at < ?", "running", now.Add(-time.Duration(tokengame.SprintDuration*tokengame.TickMillis)*time.Millisecond).UnixMilli()).Order("started_at ASC").Limit(200).Find(&runs).Error; err != nil {
 		return err
@@ -704,33 +705,37 @@ func MaintainGames(now time.Time) error {
 	for _, run := range runs {
 		view, err := gameView(&run, now)
 		if err != nil {
-			return err
+			maintenanceErrors = append(maintenanceErrors, fmt.Errorf("decode game run %s (user %d, week %s): %w", run.ID, run.UserID, run.Week, err))
+			continue
 		}
 		deadline := run.StartedAt + int64(view.State.ClockLimit()+tokengame.MaxInputBatch)*tokengame.TickMillis
 		if now.UnixMilli() < deadline {
 			continue
 		}
 		if _, err := AdvanceGame(run.UserID, run.ID, -1, nil, false, now); err != nil {
-			return err
+			maintenanceErrors = append(maintenanceErrors, fmt.Errorf("advance expired game run %s (user %d, week %s): %w", run.ID, run.UserID, run.Week, err))
 		}
 	}
 	// Do not settle a week until every outstanding run has been finalized.
 	var periods []GamePeriod
 	if err := DB.Where("id LIKE ? AND settled = ?", "week:%", false).Find(&periods).Error; err != nil {
-		return err
+		maintenanceErrors = append(maintenanceErrors, fmt.Errorf("list unsettled game weeks: %w", err))
+		return errors.Join(maintenanceErrors...)
 	}
 	for _, p := range periods {
+		week := p.ID[5:]
 		var count int64
-		if err := DB.Model(&GameRun{}).Where("week = ? AND status = ?", p.ID[5:], "running").Count(&count).Error; err != nil {
-			return err
+		if err := DB.Model(&GameRun{}).Where("week = ? AND status = ?", week, "running").Count(&count).Error; err != nil {
+			maintenanceErrors = append(maintenanceErrors, fmt.Errorf("count running games for week %s: %w", week, err))
+			continue
 		}
 		if count == 0 {
-			if err := SettleGameWeek(p.ID[5:], now); err != nil {
-				return err
+			if err := SettleGameWeek(week, now); err != nil {
+				maintenanceErrors = append(maintenanceErrors, fmt.Errorf("settle game week %s: %w", week, err))
 			}
 		}
 	}
-	return nil
+	return errors.Join(maintenanceErrors...)
 }
 func RunGameMaintenance() {
 	for {

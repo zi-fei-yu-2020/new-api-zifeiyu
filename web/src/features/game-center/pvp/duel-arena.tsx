@@ -209,7 +209,7 @@ export function DuelArena({
     const down = (e: KeyboardEvent) => {
       if (
         (e.target as HTMLElement).closest(
-          'input,textarea,select,[contenteditable="true"]'
+          'input,textarea,select,button,a,summary,[role="button"],[contenteditable="true"]'
         )
       ) {
         return

@@ -19,12 +19,15 @@ For commercial licensing, please contact support@quantumnous.com
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import i18next from 'i18next'
 import type { ReactNode } from 'react'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { formatQuota } from '@/lib/format'
+
 import * as pvpApi from '../api'
-import type { PvPMatchView } from '../api'
+import type { PvPMatchSummary, PvPMatchView } from '../api'
 import { newDuel } from '../duel-engine'
 import { PvpLobby } from '../lobby'
 
@@ -95,6 +98,27 @@ function invitedMatch(): PvPMatchView {
   }
 }
 
+function historyItem(
+  id: string,
+  opponentName: string,
+  myScore = 10,
+  opponentScore = 8
+): PvPMatchSummary {
+  return {
+    id,
+    mode: 'ranked',
+    status: 'finished',
+    stake: 500000,
+    opponent_name: opponentName,
+    my_score: myScore,
+    opponent_score: opponentScore,
+    result: 'win',
+    delta_quota: 500000,
+    created_at: Date.now() - 120000,
+    finished_at: Date.now(),
+  }
+}
+
 function Wrapper(props: { children: ReactNode }) {
   return (
     <QueryClientProvider client={client}>{props.children}</QueryClientProvider>
@@ -118,7 +142,8 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await i18next.changeLanguage('en')
   client.clear()
   vi.restoreAllMocks()
 })
@@ -179,4 +204,122 @@ it('clears an expired friendly invite and shows the expiry notice once', async (
     await client.invalidateQueries({ queryKey: ['pvp-status'] })
   })
   expect(notify).toHaveBeenCalledTimes(1)
+})
+
+it('does not reinstall a stale playing view over the same finished match', async () => {
+  const submit = vi.spyOn(pvpApi, 'submitPvPInput')
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const stage = await screen.findByRole('region', { name: 'PvP duel' })
+  expect(within(stage).getByText('Duel finished')).toBeVisible()
+
+  currentMatch = {
+    ...finishedMatch('duel-1', 'First rival'),
+    status: 'playing',
+    winner_slot: 0,
+    you_delta_quota: null,
+  }
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ['pvp-status'] })
+  })
+
+  expect(within(stage).getByText('Duel finished')).toBeVisible()
+  expect(
+    within(stage).getByRole('button', { name: 'Back to lobby' })
+  ).toBeVisible()
+  expect(
+    within(stage).queryByRole('button', { name: 'Resign' })
+  ).not.toBeInTheDocument()
+  expect(submit).not.toHaveBeenCalled()
+})
+
+it('keeps the current history page visible while the next page loads', async () => {
+  let resolvePageTwo!: (value: {
+    items: PvPMatchSummary[]
+    total: number
+  }) => void
+  vi.spyOn(pvpApi, 'listPvPMatches').mockImplementation((page) => {
+    if (page === 1) {
+      return Promise.resolve({
+        items: [historyItem('history-1', 'First page rival')],
+        total: 20,
+      })
+    }
+    return new Promise((resolve) => {
+      resolvePageTwo = resolve
+    })
+  })
+  const user = userEvent.setup()
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const history = await screen.findByRole('region', {
+    name: 'PvP match history',
+  })
+  expect(await within(history).findByText(/First page rival/)).toBeVisible()
+
+  await user.click(within(history).getByRole('button', { name: 'Next' }))
+
+  expect(within(history).getByText(/First page rival/)).toBeVisible()
+  expect(within(history).queryByText(/No duels yet/)).not.toBeInTheDocument()
+  await act(async () => {
+    resolvePageTwo({
+      items: [historyItem('history-2', 'Second page rival')],
+      total: 20,
+    })
+  })
+  expect(await within(history).findByText(/Second page rival/)).toBeVisible()
+})
+
+it('shows a loading state instead of the empty message during the first history load', async () => {
+  let resolveFirst!: (value: {
+    items: PvPMatchSummary[]
+    total: number
+  }) => void
+  vi.spyOn(pvpApi, 'listPvPMatches').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveFirst = resolve
+      })
+  )
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const history = await screen.findByRole('region', {
+    name: 'PvP match history',
+  })
+
+  expect(within(history).getByText('Loading...')).toBeVisible()
+  expect(within(history).queryByText(/No duels yet/)).not.toBeInTheDocument()
+  await act(async () => {
+    resolveFirst({
+      items: [historyItem('history-1', 'Loaded rival')],
+      total: 1,
+    })
+  })
+  expect(await within(history).findByText(/Loaded rival/)).toBeVisible()
+})
+
+it('formats history scores and counts with the active interface locale', async () => {
+  vi.spyOn(pvpApi, 'listPvPMatches').mockResolvedValue({
+    items: [historyItem('history-1', 'Locale rival', 1234, 5678)],
+    total: 1234,
+  })
+  await act(() => i18next.changeLanguage('zhCN'))
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const history = await screen.findByRole('region', {
+    name: 'PvP match history',
+  })
+  expect(await within(history).findByText(/1,234 : 5,678/)).toBeVisible()
+  expect(within(history).getByText('1,234 duels')).toBeVisible()
+
+  await act(() => i18next.changeLanguage('fr'))
+  const french = new Intl.NumberFormat('fr')
+  const expectedScore = `${french.format(1234)} : ${french.format(5678)} · ${formatQuota(500000)}`
+  expect(
+    within(history).getByText(
+      (_content, element) => element?.textContent === expectedScore
+    )
+  ).toBeVisible()
+  const expectedTotal = `${french.format(1234)} duels`
+  expect(
+    within(history).getByText(
+      (_content, element) => element?.textContent === expectedTotal
+    )
+  ).toBeVisible()
 })
