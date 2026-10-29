@@ -116,12 +116,24 @@ export function PvpLobby() {
   const [dismissed, setDismissed] = useState<string | null>(null)
   useEffect(() => {
     const view = status.data?.match
+    if (sessionMatch?.status === 'invited' && view?.id !== sessionMatch.id) {
+      install(null)
+      toast.error(t('PvP invite code has expired'))
+      return
+    }
     if (!view || view.id === dismissed) return
     if (sessionMatch?.id === view.id && sessionMatch.status === view.status) {
       return
     }
     install(view)
-  }, [status.data, sessionMatch?.id, sessionMatch?.status, dismissed, install])
+  }, [
+    status.data,
+    sessionMatch?.id,
+    sessionMatch?.status,
+    dismissed,
+    install,
+    t,
+  ])
   const leaveResult = () => {
     if (active) setDismissed(active.id)
     install(null)
@@ -163,15 +175,16 @@ export function PvpLobby() {
     )
   }
   const inDuel =
-    !!ownedMatch ||
-    (active?.status === 'invited' && active.id !== dismissed)
+    !!ownedMatch || (active?.status === 'invited' && active.id !== dismissed)
   const waiting = !inDuel && !!status.data.queue
   return (
     <div className='space-y-5'>
       {ownedMatch ? (
         <DuelStage match={ownedMatch} session={session} onExit={leaveResult} />
       ) : null}
-      {!ownedMatch && active?.status === 'invited' && active.id !== dismissed ? (
+      {!ownedMatch &&
+      active?.status === 'invited' &&
+      active.id !== dismissed ? (
         <InvitePanel match={active} />
       ) : null}
       {!ownedMatch &&

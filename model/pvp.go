@@ -27,6 +27,7 @@ var (
 	ErrPvPInput          = errors.New("PvP input rejected")
 	ErrPvPNotFound       = errors.New("PvP match not found")
 	ErrPvPInvite         = errors.New("PvP invite is no longer available")
+	ErrPvPInviteExpired  = errors.New("PvP invite code has expired")
 	ErrPvPReplayNotReady = errors.New("PvP replay is only available after the duel finishes")
 )
 
@@ -570,12 +571,21 @@ func JoinPvPFriendly(userID int, code string, now time.Time) (*PvPMatchView, err
 		if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
 			return err
 		}
-		err := lockForUpdate(tx).Where("invite_code = ? AND status = ?", code, "invited").First(&match).Error
+		err := lockForUpdate(tx).Where("invite_code = ?", code).First(&match).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrPvPInvite
 		}
 		if err != nil {
 			return err
+		}
+		if match.Status == "cancelled" && match.Player2ID == 0 {
+			return ErrPvPInviteExpired
+		}
+		if match.Status != "invited" {
+			return ErrPvPInvite
+		}
+		if !now.Before(time.UnixMilli(match.CreatedAt).Add(pvpInviteTimeout)) {
+			return ErrPvPInviteExpired
 		}
 		if match.Player1ID == userID {
 			return ErrPvPInvite
@@ -707,6 +717,12 @@ func SubmitPvPInput(userID int, matchID string, seq, from int, inputs []int, qui
 		var state tokengame.DuelState
 		if err := common.Unmarshal([]byte(match.StateJSON), &state); err != nil {
 			return err
+		}
+		// Another player may have advanced the shared clock past this batch.
+		// Rebuild from the complete accepted streams so late inputs take effect
+		// instead of being acknowledged and silently replaced with neutral ticks.
+		if len(inputs) > 0 && from < state.Tick {
+			state = tokengame.NewDuel(uint32(match.Seed))
 		}
 		tokengame.AdvanceDuel(&state, allowed, inputs1, inputs2)
 		if quit {

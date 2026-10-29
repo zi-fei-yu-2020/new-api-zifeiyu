@@ -151,6 +151,8 @@ func respondPvPError(c *gin.Context, err error, fallback string) {
 		common.ApiErrorT(c, "PvP input rejected. Refresh the duel and retry")
 	case errors.Is(err, model.ErrPvPNotFound):
 		common.ApiErrorT(c, "PvP match not found")
+	case errors.Is(err, model.ErrPvPInviteExpired):
+		common.ApiErrorT(c, "PvP invite code has expired")
 	case errors.Is(err, model.ErrPvPInvite):
 		common.ApiErrorT(c, "Invalid or expired PvP invite code")
 	case errors.Is(err, model.ErrPvPReplayNotReady):

@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import * as pvpApi from '../api'
@@ -28,7 +29,7 @@ import { newDuel } from '../duel-engine'
 import { PvpLobby } from '../lobby'
 
 let client: QueryClient
-let currentMatch: PvPMatchView
+let currentMatch: PvPMatchView | null
 let getStatus: ReturnType<typeof vi.spyOn>
 
 function finishedMatch(id: string, opponentName: string): PvPMatchView {
@@ -55,6 +56,41 @@ function finishedMatch(id: string, opponentName: string): PvPMatchView {
     created_at: now - 120000,
     started_at: now - 120000,
     finished_at: now,
+    server_time: now,
+  }
+}
+
+function invitedMatch(): PvPMatchView {
+  const now = Date.now()
+  return {
+    id: 'invite-1',
+    mode: 'friendly',
+    status: 'invited',
+    stake: 500000,
+    seed: 7,
+    you: {
+      slot: 1,
+      secret: 'invite-secret',
+      cursor: 0,
+      seq: 0,
+      score: 0,
+      hp: 100,
+    },
+    opponent: {
+      id: 0,
+      name: '',
+      display_name: '',
+      cursor: 0,
+      score: 0,
+      hp: 100,
+    },
+    state: null,
+    winner_slot: 0,
+    you_delta_quota: null,
+    invite_code: 'abcd1234',
+    created_at: now,
+    started_at: 0,
+    finished_at: 0,
     server_time: now,
   }
 }
@@ -102,7 +138,9 @@ it('keeps dismissed results out of the lobby while allowing a new result to inst
     await screen.findByRole('region', { name: 'Ranked matchmaking' })
   ).toBeVisible()
   expect(screen.getByRole('region', { name: 'Friendly duel' })).toBeVisible()
-  expect(screen.queryByRole('region', { name: 'PvP duel' })).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('region', { name: 'PvP duel' })
+  ).not.toBeInTheDocument()
 
   currentMatch = finishedMatch('duel-2', 'Second rival')
   await act(async () => {
@@ -114,4 +152,31 @@ it('keeps dismissed results out of the lobby while allowing a new result to inst
   expect(
     screen.queryByRole('region', { name: 'Ranked matchmaking' })
   ).not.toBeInTheDocument()
+})
+
+it('clears an expired friendly invite and shows the expiry notice once', async () => {
+  currentMatch = invitedMatch()
+  const notify = vi.spyOn(toast, 'error')
+  render(<PvpLobby />, { wrapper: Wrapper })
+
+  expect(
+    await screen.findByRole('region', { name: 'Friendly duel invite' })
+  ).toBeVisible()
+  currentMatch = null
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ['pvp-status'] })
+  })
+
+  await waitFor(() =>
+    expect(notify).toHaveBeenCalledWith('PvP invite code has expired')
+  )
+  expect(
+    screen.queryByRole('region', { name: 'Friendly duel invite' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Friendly duel' })).toBeVisible()
+
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ['pvp-status'] })
+  })
+  expect(notify).toHaveBeenCalledTimes(1)
 })

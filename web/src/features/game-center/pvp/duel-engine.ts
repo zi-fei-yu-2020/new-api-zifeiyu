@@ -422,9 +422,10 @@ export function replayAllowedTicks(startedAt: number, receivedAt: number) {
 
 // replayDuelTo rebuilds the authoritative duel exactly as the server ran it:
 // batches replay in arrival order and each one advances the simulation only to
-// the tick the server clock allowed at that moment, so inputs the server
-// consumed as neutral (they arrived after the clock had passed their tick)
-// stay neutral here and the rebuilt outcome matches the settled result.
+// the tick the server clock allowed at that moment. If an accepted batch starts
+// behind the current tick, the duel is rebuilt from the complete streams so
+// those inputs take effect through the same deterministic rollback as the
+// server instead of being acknowledged as neutral.
 // target scrubs to an intermediate tick: batches that arrived later than that
 // tick do not contribute, and the gap fills with neutral ticks. The settled
 // end frame is the exception — a batch arriving after the deadline whose
@@ -436,7 +437,7 @@ export function replayDuelTo(
   target: number
 ): DuelState {
   const ordered = [...batches].sort((a, b) => a.id - b.id)
-  const state = newDuel(seed)
+  let state = newDuel(seed)
   const streams: [number[], number[]] = [[], []]
   for (const batch of ordered) {
     const allowed = replayAllowedTicks(startedAt, batch.received_at)
@@ -444,6 +445,9 @@ export function replayDuelTo(
     const settled = target >= DUEL_DURATION && state.tick < DUEL_DURATION
     if (!arrived && !settled) continue
     streams[batch.player - 1].push(...batch.inputs)
+    if (batch.inputs.length > 0 && batch.from_tick < state.tick) {
+      state = newDuel(seed)
+    }
     advanceDuel(state, Math.min(allowed, target), streams[0], streams[1])
     if (batch.quit && arrived) forfeit(state, batch.player - 1)
   }

@@ -220,8 +220,27 @@ func testPvPInputs(t *testing.T, db *gorm.DB) {
 	_, err = SubmitPvPInput(99, matchID, 1, 0, batch, false, pvpSigned(second.You.Secret, matchID, 2, 1, 0, batch, false), now)
 	require.ErrorIs(t, err, ErrPvPNotFound)
 
+	// The opponent has already advanced the shared clock past these ticks. An
+	// accepted late batch must still move the left player instead of being
+	// acknowledged as neutral input and snapping the client back on sync.
+	moves := []int{3, 3, 3, 3, 3, 3, 3, 3, 3, 3}
+	moved, err := SubmitPvPInput(11, matchID, 1, 0, moves, false, pvpSigned(first.You.Secret, matchID, 1, 1, 0, moves, false), now)
+	require.NoError(t, err)
+	require.NotNil(t, moved.State)
+	require.Greater(t, moved.State.Players[0].X, 2500)
+
+	// Repeat the normal alternating submission order: the opponent advances
+	// first, then the left player's next rightward batch must still take effect.
+	previousX := moved.State.Players[0].X
+	nextAt := now.Add(600 * time.Millisecond)
+	_, err = SubmitPvPInput(12, matchID, 2, 10, make([]int, 5), false, pvpSigned(second.You.Secret, matchID, 2, 2, 10, make([]int, 5), false), nextAt)
+	require.NoError(t, err)
+	moved, err = SubmitPvPInput(11, matchID, 2, 10, moves[:5], false, pvpSigned(first.You.Secret, matchID, 1, 2, 10, moves[:5], false), nextAt)
+	require.NoError(t, err)
+	require.Greater(t, moved.State.Players[0].X, previousX)
+
 	// A resignation loses on the spot and pays the whole pot to the winner.
-	final, err := SubmitPvPInput(11, matchID, 1, 0, nil, true, pvpSigned(first.You.Secret, matchID, 1, 1, 0, nil, true), now)
+	final, err := SubmitPvPInput(11, matchID, 3, 15, nil, true, pvpSigned(first.You.Secret, matchID, 1, 3, 15, nil, true), nextAt)
 	require.NoError(t, err)
 	require.Equal(t, "finished", final.Status)
 	require.Equal(t, 2, final.WinnerSlot)
@@ -236,7 +255,7 @@ func testPvPInputs(t *testing.T, db *gorm.DB) {
 	require.NoError(t, db.Model(&PvPLedger{}).Where("kind = ?", "payout").Count(&payouts).Error)
 	require.EqualValues(t, 1, payouts)
 	// Settlement is idempotent: late duplicate packets pay nothing again.
-	repeat, err := SubmitPvPInput(11, matchID, 1, 0, nil, true, pvpSigned(first.You.Secret, matchID, 1, 1, 0, nil, true), now)
+	repeat, err := SubmitPvPInput(11, matchID, 3, 15, nil, true, pvpSigned(first.You.Secret, matchID, 1, 3, 15, nil, true), nextAt)
 	require.NoError(t, err)
 	require.Equal(t, "finished", repeat.Status)
 	require.NoError(t, db.First(&b, 12).Error)
@@ -346,6 +365,29 @@ func testPvPFriendly(t *testing.T, db *gorm.DB) {
 	require.Nil(t, status.Queue)
 	require.NotNil(t, status.Match)
 	require.Equal(t, "finished", status.Match.Status)
+
+	// Expiry is enforced at redemption time, not only by the asynchronous
+	// maintenance loop, and remains a distinct error after cancellation.
+	pvpTestUser(t, db, 24, 100000)
+	pvpTestUser(t, db, 25, 100000)
+	expired, err := CreatePvPFriendly(24, 50000, base)
+	require.NoError(t, err)
+	_, err = JoinPvPFriendly(25, *expired.InviteCode, base.Add(pvpInviteTimeout))
+	require.ErrorIs(t, err, ErrPvPInviteExpired)
+	var expiredGuest User
+	require.NoError(t, db.First(&expiredGuest, 25).Error)
+	require.Equal(t, 100000, expiredGuest.Quota, "an expired invite must not debit the joiner")
+
+	expiresAt := base.Add(pvpInviteTimeout + time.Second)
+	require.NoError(t, MaintainPvP(expiresAt))
+	var cancelled PvPMatch
+	require.NoError(t, db.First(&cancelled, "id = ?", expired.ID).Error)
+	require.Equal(t, "cancelled", cancelled.Status)
+	_, err = JoinPvPFriendly(25, *expired.InviteCode, expiresAt)
+	require.ErrorIs(t, err, ErrPvPInviteExpired)
+	var expiredHost User
+	require.NoError(t, db.First(&expiredHost, 24).Error)
+	require.Equal(t, 100000, expiredHost.Quota)
 }
 
 func testPvPMaintenance(t *testing.T, db *gorm.DB) {

@@ -87,19 +87,14 @@ it('rebuilds the settled state from on-time batches exactly like raw streams', (
   const [inputs1, inputs2] = buildDuelStreams(batches)
   expect(inputs1).toEqual(fixture.inputs1)
   expect(inputs2).toEqual(fixture.inputs2)
-  const replayed = replayDuelTo(
-    fixture.seed,
-    startedAt,
-    batches,
-    DUEL_DURATION
-  )
+  const replayed = replayDuelTo(fixture.seed, startedAt, batches, DUEL_DURATION)
   const expected = structuredClone(fixture.state)
   expected.players[0].cursor = fixture.inputs1.length
   expected.players[1].cursor = fixture.inputs2.length
   expect(replayed).toEqual(expected)
 })
 
-it('replays late inputs as neutral exactly like the authoritative server', () => {
+it('rolls back accepted late inputs so replay matches the authoritative state', () => {
   const seed = 42
   const startedAt = 1_000_000
   const batches: DuelInputBatch[] = [
@@ -122,20 +117,19 @@ it('replays late inputs as neutral exactly like the authoritative server', () =>
       quit: false,
     },
   ]
-  // Player two submitted moves for ticks 0-1, but the server had already
-  // consumed those ticks as neutral when batch 1 arrived; the replay must
-  // agree instead of resurrecting the dropped inputs.
+  // Player two submitted moves for ticks 0-1 after the shared clock had
+  // passed them. The accepted inputs still take effect through deterministic
+  // rollback, and replay must produce the same state as the full streams.
   const state = replayDuelTo(seed, startedAt, batches, 30)
   expect(state.tick).toBe(30)
   expect(state.players[0].x).toBeGreaterThan(2500)
   expect(state.players[1].x).toBe(7500)
-  expect(state.players[1].y).toBe(3500)
+  expect(state.players[1].y).toBeGreaterThan(3500)
   // Scrubbing before the first batch arrived hides it entirely.
   expect(replayDuelTo(seed, startedAt, batches, 5).players[0].x).toBe(2500)
-  // A naive full-stream replay would have moved player two.
-  const naive = newDuel(seed)
-  advanceDuel(naive, 30, [3], [5, 5])
-  expect(naive.players[1].y).toBeGreaterThan(3500)
+  const expected = newDuel(seed)
+  advanceDuel(expected, 30, [3], [5, 5])
+  expect(state).toEqual(expected)
 })
 
 it('applies a recorded resignation at its arrival tick and not before', () => {
