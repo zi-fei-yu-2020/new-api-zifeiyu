@@ -25,6 +25,7 @@ import {
   act,
   waitFor,
 } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -39,6 +40,7 @@ import {
   type GameStatus,
 } from './api'
 import { newGame } from './engine'
+import { getMatchStatus, type MatchRun, type MatchStatus } from './match3/api'
 
 vi.mock('@/lib/api', () => ({ getSelf: vi.fn() }))
 vi.mock('@/components/layout/components/public-layout', () => ({
@@ -46,6 +48,8 @@ vi.mock('@/components/layout/components/public-layout', () => ({
 }))
 vi.mock('./arena', () => ({ Arena: () => <div /> }))
 vi.mock('./leaderboard', () => ({ Leaderboard: () => <div /> }))
+vi.mock('./match3/match3-panel', () => ({ Match3Panel: () => <div /> }))
+vi.mock('./match3/api', () => ({ getMatchStatus: vi.fn() }))
 vi.mock('./api', () => ({
   getGameStatus: vi.fn(),
   getGameRewards: vi.fn(),
@@ -115,6 +119,10 @@ beforeEach(() => {
     },
   }
   vi.mocked(getGameStatus).mockImplementation(async () => status)
+  vi.mocked(getMatchStatus).mockResolvedValue({
+    daily_run: null,
+    endless_run: null,
+  } as unknown as MatchStatus)
   vi.mocked(getGameRewards).mockImplementation(async () => ({
     budgets: status.budgets,
     week: status.week,
@@ -284,4 +292,50 @@ it('shows the upgrade choice in the arena with the paused-combat explanation', a
   expect(within(panel).getByText('Combat paused')).toBeVisible()
   expect(within(panel).getAllByRole('button')).toHaveLength(3)
   expect(screen.getByText('1:10')).toBeVisible()
+})
+
+it('opens the daily tab when a survivor run and a tile run are both running', async () => {
+  run.status = 'running'
+  vi.mocked(getMatchStatus).mockResolvedValue({
+    daily_run: { id: 'tile-run', status: 'running' } as MatchRun,
+    endless_run: null,
+  } as MatchStatus)
+  show()
+
+  await waitFor(() => expect(getMatchStatus).toHaveBeenCalled())
+  await act(async () => {})
+  expect(screen.getByRole('tab', { name: 'Daily challenge' })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  )
+})
+
+it('hides the survivor upgrade dialog while another tab is shown so its hotkeys stay free', async () => {
+  run.status = 'running'
+  run.state.hp = 100
+  run.state.tick = 200
+  run.state.clock_tick = 200
+  show()
+  await screen.findByRole('dialog', { name: 'Choose your upgrade' })
+
+  await userEvent.click(screen.getByRole('tab', { name: 'Tile Match' }))
+
+  expect(
+    screen.queryByRole('dialog', { name: 'Choose your upgrade' })
+  ).not.toBeInTheDocument()
+})
+
+it('opens the tile tab when only a tile run is running', async () => {
+  vi.mocked(getMatchStatus).mockResolvedValue({
+    daily_run: { id: 'tile-run', status: 'running' } as MatchRun,
+    endless_run: null,
+  } as MatchStatus)
+  show()
+
+  await waitFor(() =>
+    expect(screen.getByRole('tab', { name: 'Tile Match' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+  )
 })

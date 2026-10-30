@@ -37,6 +37,11 @@ export type GameSettings = {
   pvp_enabled?: boolean
   pvp_min_stake?: number
   pvp_max_stake?: number
+  match3_enabled?: boolean
+  match3_rewards_enabled?: boolean
+  match3_weekly_first_quota?: number
+  match3_weekly_second_quota?: number
+  match3_weekly_third_quota?: number
 }
 export type GameRun = {
   id: string
@@ -90,6 +95,7 @@ export type Rank = {
   runs: number
   rank: number
   is_me: boolean
+  level?: number
 }
 type Envelope<T> = { success: boolean; data: T; message?: string }
 const path = '/api/user/game'

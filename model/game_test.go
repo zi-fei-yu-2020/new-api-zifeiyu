@@ -59,7 +59,7 @@ func TestGameDatabaseMatrix(t *testing.T) {
 				require.NoError(t, db.Raw("select version()").Scan(&version).Error)
 			}
 			t.Log(dialect, version)
-			models := []any{&GameReward{}, &GameRun{}, &GamePeriod{}, &Log{}, &User{}, &Option{}}
+			models := []any{&GameReward{}, &GameRun{}, &GamePeriod{}, &MatchRun{}, &MatchRank{}, &MatchProfile{}, &Log{}, &User{}, &Option{}}
 			for _, scenario := range []string{"fresh", "upgrade"} {
 				t.Run(scenario, func(t *testing.T) {
 					require.NoError(t, db.Migrator().DropTable(models...))
@@ -73,10 +73,19 @@ func TestGameDatabaseMatrix(t *testing.T) {
 						require.NoError(t, db.Create(&legacyGameRunSchema{ID: "legacy-game", UserID: 90, Day: "2026-10-01", Week: "2026-09-28", Status: "survived", StateJSON: "{}", Score: 1234, QuotaAwarded: 42}).Error)
 						require.NoError(t, db.Create(&legacyGamePeriodSchema{ID: "day:2026-10-01", Budget: 100, Spent: 42, DailyQuota: 42}).Error)
 					}
+					var legacyRunBefore legacyGameRunSchema
+					var legacyPeriodBefore legacyGamePeriodSchema
+					if scenario == "upgrade" {
+						require.NoError(t, db.First(&legacyRunBefore, "id = ?", "legacy-game").Error)
+						require.NoError(t, db.First(&legacyPeriodBefore, "id = ?", "day:2026-10-01").Error)
+					}
 					for range 2 {
 						require.NoError(t, db.AutoMigrate(models...))
 					}
 					require.True(t, db.Migrator().HasIndex(&GameRun{}, "idx_game_daily_attempt"))
+					require.True(t, db.Migrator().HasIndex(&MatchRun{}, "idx_match_slot"))
+					require.True(t, db.Migrator().HasIndex(&MatchRank{}, "idx_match_rank_user"))
+					require.True(t, db.Migrator().HasIndex(&MatchRank{}, "idx_match_rank_order"))
 					if scenario == "upgrade" {
 						var user User
 						require.NoError(t, db.First(&user, 90).Error)
@@ -93,6 +102,12 @@ func TestGameDatabaseMatrix(t *testing.T) {
 						require.NoError(t, db.First(&legacyPeriod, "id = ?", "day:2026-10-01").Error)
 						require.Equal(t, 42, legacyPeriod.Spent)
 						require.Zero(t, legacyPeriod.Reserved)
+						var legacyRunAfter legacyGameRunSchema
+						var legacyPeriodAfter legacyGamePeriodSchema
+						require.NoError(t, db.First(&legacyRunAfter, "id = ?", "legacy-game").Error)
+						require.NoError(t, db.First(&legacyPeriodAfter, "id = ?", "day:2026-10-01").Error)
+						require.Equal(t, legacyRunBefore, legacyRunAfter, "the tile game tables must not touch legacy game runs")
+						require.Equal(t, legacyPeriodBefore, legacyPeriodAfter)
 					}
 					testGameUpgradeClock(t, time.Date(2026, 11, 20, 12, 0, 0, 0, gameZone))
 					t.Run("network_recovery", func(t *testing.T) {
@@ -238,6 +253,8 @@ func TestGameDatabaseMatrix(t *testing.T) {
 					require.Nil(t, next)
 					verifyTokenGameRewards(t, db)
 					verifyGameRewardActivation(t, db)
+					// verifyWeeklyPodiumRewards leaves a failing game_periods update hook installed until this scenario ends.
+					t.Run("match3", func(t *testing.T) { verifyMatch(t, db) })
 					verifyWeeklyPodiumRewards(t, db)
 				})
 			}
