@@ -24,6 +24,7 @@ import type { ReactNode } from 'react'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { api } from '@/lib/api'
 import { formatQuota } from '@/lib/format'
 
 import * as pvpApi from '../api'
@@ -322,4 +323,150 @@ it('formats history scores and counts with the active interface locale', async (
       (_content, element) => element?.textContent === expectedTotal
     )
   ).toBeVisible()
+})
+
+it('keeps an in-progress duel on screen when PvP is switched off', async () => {
+  currentMatch = {
+    ...finishedMatch('duel-live', 'Live rival'),
+    status: 'playing',
+    winner_slot: 0,
+    you_delta_quota: null,
+    finished_at: 0,
+  }
+  getStatus.mockImplementation(async () => ({
+    enabled: false,
+    min_stake: 500000,
+    max_stake: 5000000,
+    queue: null,
+    match: currentMatch,
+    server_time: Date.now(),
+  }))
+  render(<PvpLobby />, { wrapper: Wrapper })
+
+  const stage = await screen.findByRole('region', { name: 'PvP duel' })
+  expect(within(stage).getByRole('button', { name: 'Resign' })).toBeVisible()
+  expect(
+    screen.queryByText('PvP duels are currently disabled')
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('region', { name: 'Friendly duel' })
+  ).not.toBeInTheDocument()
+})
+
+it('shows the disabled notice and no entry panels when PvP is off and idle', async () => {
+  currentMatch = null
+  getStatus.mockImplementation(async () => ({
+    enabled: false,
+    min_stake: 500000,
+    max_stake: 5000000,
+    queue: null,
+    match: null,
+    server_time: Date.now(),
+  }))
+  render(<PvpLobby />, { wrapper: Wrapper })
+
+  expect(
+    await screen.findByText('PvP duels are currently disabled')
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('region', { name: 'Friendly duel' })
+  ).not.toBeInTheDocument()
+})
+
+it('keeps the invite code visible with an inline error when a status poll fails', async () => {
+  currentMatch = invitedMatch()
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const invite = await screen.findByRole('region', {
+    name: 'Friendly duel invite',
+  })
+  expect(within(invite).getByText('abcd1234')).toBeVisible()
+
+  getStatus.mockRejectedValue(new Error('offline'))
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ['pvp-status'] })
+  })
+
+  expect(await screen.findByText(/Unable to refresh PvP status/)).toBeVisible()
+  expect(
+    screen.getByRole('region', { name: 'Friendly duel invite' })
+  ).toBeVisible()
+  expect(screen.getByText('abcd1234')).toBeVisible()
+})
+
+it('shows the settled score and zero clock for a reopened finished duel', async () => {
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const stage = await screen.findByRole('region', { name: 'PvP duel' })
+
+  expect(within(stage).getByText('100')).toBeVisible()
+  expect(within(stage).getByText('80')).toBeVisible()
+  expect(within(stage).getByText('0:00')).toBeVisible()
+})
+
+it('sends the invite code trimmed and lower-cased', async () => {
+  currentMatch = null
+  const join = vi.spyOn(pvpApi, 'joinPvPFriendly').mockResolvedValue({
+    match: invitedMatch(),
+  })
+  const user = userEvent.setup()
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const code = await screen.findByLabelText('Invite code')
+
+  await user.type(code, '  ABCD1234  ')
+  await user.click(screen.getByRole('button', { name: 'Join duel' }))
+
+  await waitFor(() => expect(join).toHaveBeenCalledWith('abcd1234'))
+})
+
+it('cancels an open invite through the friendly endpoint and returns to the lobby', async () => {
+  currentMatch = invitedMatch()
+  const remove = vi.spyOn(api, 'delete').mockResolvedValue({
+    data: { success: true, data: { cancelled: true } },
+  })
+  const user = userEvent.setup()
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const invite = await screen.findByRole('region', {
+    name: 'Friendly duel invite',
+  })
+
+  currentMatch = null
+  await user.click(
+    within(invite).getByRole('button', { name: 'Cancel invite' })
+  )
+
+  await waitFor(() =>
+    expect(remove).toHaveBeenCalledWith(
+      '/api/user/game/pvp/friendly',
+      expect.anything()
+    )
+  )
+  expect(
+    await screen.findByRole('region', { name: 'Friendly duel' })
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('region', { name: 'Friendly duel invite' })
+  ).not.toBeInTheDocument()
+})
+
+it('labels cancelled matches and translates the deleted-account placeholder in history', async () => {
+  vi.spyOn(pvpApi, 'listPvPMatches').mockResolvedValue({
+    items: [
+      {
+        ...historyItem('history-1', 'Deleted account'),
+        status: 'cancelled',
+        result: '',
+      },
+    ],
+    total: 1,
+  })
+  currentMatch = null
+  render(<PvpLobby />, { wrapper: Wrapper })
+  const history = await screen.findByRole('region', {
+    name: 'PvP match history',
+  })
+
+  expect(await within(history).findByText('Cancelled')).toBeVisible()
+  expect(
+    within(history).queryByText('Awaiting opponent')
+  ).not.toBeInTheDocument()
+  expect(within(history).getByText(/Deleted account/)).toBeVisible()
 })

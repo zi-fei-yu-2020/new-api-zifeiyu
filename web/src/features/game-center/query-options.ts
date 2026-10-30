@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { queryOptions } from '@tanstack/react-query'
 
 import { getGameStatus } from './api'
+import { getPvPStatus } from './pvp/api'
 
 export const gameStatusQueryOptions = queryOptions({
   queryKey: ['game-status'],
@@ -27,6 +28,16 @@ export const gameStatusQueryOptions = queryOptions({
   refetchOnReconnect: false,
   // Only long enough to share the route guard's fetch with the page mount;
   // a longer window would reinstall a stale run snapshot on remount.
+  staleTime: 2_000,
+  meta: { errorToast: false },
+})
+
+// Shared by the route guard, the tab shell and the PvP lobby so one fetch can
+// answer all three.
+export const pvpStatusQueryOptions = queryOptions({
+  queryKey: ['pvp-status'],
+  queryFn: ({ signal }) => getPvPStatus(signal),
+  refetchOnWindowFocus: false,
   staleTime: 2_000,
   meta: { errorToast: false },
 })

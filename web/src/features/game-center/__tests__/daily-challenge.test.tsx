@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import i18next from 'i18next'
 import { toast } from 'sonner'
@@ -245,4 +245,28 @@ it('records a newly started run in the status cache so a quick remount keeps it'
       'started-run'
     )
   )
+})
+
+it('refetches the status once after the reset boundary instead of on every tick', async () => {
+  const resetsAt = Date.now() - 1000
+  vi.mocked(getGameStatus).mockImplementation(async () => ({
+    ...createStatus(sessionRun),
+    resets_at: resetsAt,
+  }))
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  try {
+    show()
+    await waitFor(() =>
+      expect(vi.mocked(getGameStatus).mock.calls.length).toBeGreaterThan(1)
+    )
+    const afterReset = vi.mocked(getGameStatus).mock.calls.length
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+
+    expect(vi.mocked(getGameStatus).mock.calls.length).toBe(afterReset)
+  } finally {
+    vi.useRealTimers()
+  }
 })

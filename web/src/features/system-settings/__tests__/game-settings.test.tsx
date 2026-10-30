@@ -132,6 +132,26 @@ it('rejects a maximum duel stake below the minimum instead of saving it', async 
   )
   expect(api.put).not.toHaveBeenCalled()
 })
+it('rejects a capped daily budget below one run maximum reward and accepts zero', async () => {
+  render(<Workspace />)
+  const budget = await screen.findByRole('spinbutton', {
+    name: /Total daily reward budget/,
+  })
+  await userEvent.clear(budget)
+  await userEvent.type(budget, '1')
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  expect(
+    await screen.findByText(
+      'A capped daily budget must cover at least the maximum reward for one run'
+    )
+  ).toBeVisible()
+  expect(api.put).not.toHaveBeenCalled()
+
+  await userEvent.clear(budget)
+  await userEvent.type(budget, '0')
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+})
 it('does not turn an empty reward amount into an unintended zero-value reward', async () => {
   render(<Workspace />)
   const first = await screen.findByRole('spinbutton', {

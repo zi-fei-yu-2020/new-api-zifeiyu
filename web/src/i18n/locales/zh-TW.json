@@ -8067,6 +8067,14 @@
     "Your score": "你的得分",
     "duels": "場對戰",
     "vs {{name}} (red)": "對陣 {{name}}（紅方）",
-    "{{name}} (blue)": "{{name}}（藍方）"
+    "{{name}} (blue)": "{{name}}（藍方）",
+    "Deleted account": "已刪除帳號",
+    "PvP stake locked: {{quota}}": "PvP 賭注已鎖定：{{quota}}",
+    "Unable to cancel the friendly duel": "無法取消好友對戰",
+    "Unable to refresh PvP status. Showing the last known data.": "無法重新整理 PvP 狀態，正在顯示最近一次的資料。",
+    "Cancel invite": "取消邀請",
+    "Invite cancelled": "邀請已取消",
+    "Get ready. The duel starts in {{seconds}}s": "準備！對戰將在 {{seconds}} 秒後開始",
+    "A capped daily budget must cover at least the maximum reward for one run": "設有上限的每日預算必須至少涵蓋單次挑戰的最高獎勵"
   }
 }

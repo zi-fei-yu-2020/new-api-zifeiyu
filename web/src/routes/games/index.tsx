@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { GameCenter } from '@/features/game-center'
-import { gameStatusQueryOptions } from '@/features/game-center/query-options'
+import {
+  gameStatusQueryOptions,
+  pvpStatusQueryOptions,
+} from '@/features/game-center/query-options'
 import { resolveAuthentication } from '@/lib/auth-session'
 import { isWorkbenchEnabledForGuard } from '@/lib/nav-modules'
 import { useAuthStore } from '@/stores/auth-store'
@@ -38,7 +41,21 @@ export const Route = createFileRoute('/games/')({
       } catch {
         return
       }
-      if (state.run?.status !== 'running') throw redirect({ to: '/dashboard' })
+      if (state.run?.status === 'running') return
+      // A duel in progress (or an open invite holding a stake) must stay
+      // reachable too, otherwise the player cannot control or cancel it.
+      try {
+        const pvp = await context.queryClient.fetchQuery(pvpStatusQueryOptions)
+        if (
+          pvp.match?.status === 'playing' ||
+          pvp.match?.status === 'invited'
+        ) {
+          return
+        }
+      } catch {
+        return
+      }
+      throw redirect({ to: '/dashboard' })
     }
   },
   component: GameCenter,

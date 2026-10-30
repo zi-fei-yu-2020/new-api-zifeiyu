@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { act, cleanup, renderHook } from '@testing-library/react'
+import { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import * as pvpApi from '../api'
@@ -254,4 +255,123 @@ it('catches up with neutral batches after falling behind the server clock', asyn
   expect(inputs.every((value: number) => value === 0)).toBe(true)
   // The neutral catch-up batches close the gap instead of stalling forever.
   expect(submit.mock.calls[1][2]).toBe(300)
+})
+
+function transientError(status: number, retryAfter?: string) {
+  return new AxiosError(
+    'Request failed',
+    AxiosError.ERR_BAD_REQUEST,
+    undefined,
+    undefined,
+    {
+      status,
+      statusText: '',
+      data: {},
+      headers: retryAfter ? { 'retry-after': retryAfter } : {},
+      config: {} as InternalAxiosRequestConfig,
+    }
+  )
+}
+
+it('counts down to the future start and neither simulates nor submits before it', async () => {
+  const initial = playableMatch()
+  initial.started_at = initial.server_time + 4000
+  const submit = vi
+    .spyOn(pvpApi, 'submitPvPInput')
+    .mockImplementation(async (_id, _seq, from, inputs) =>
+      authoritative(initial, from, inputs)
+    )
+  const { result } = renderHook(() => useDuelSession(vi.fn()))
+  act(() => {
+    result.current.install(initial)
+    result.current.input.current.direction = 3
+  })
+  expect(result.current.countdown).toBe(4)
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000)
+  })
+  expect(submit).not.toHaveBeenCalled()
+  expect(result.current.state.current.tick).toBe(0)
+  expect(result.current.countdown).toBe(1)
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000)
+  })
+  expect(result.current.countdown).toBe(0)
+  expect(submit).toHaveBeenCalled()
+  expect(submit.mock.calls[0][2]).toBe(0)
+})
+
+it('keeps queued inputs and resends the same sequence after a 429', async () => {
+  const initial = playableMatch()
+  const fetchMatch = vi.spyOn(pvpApi, 'getPvPMatch')
+  const submit = vi
+    .spyOn(pvpApi, 'submitPvPInput')
+    .mockRejectedValueOnce(transientError(429, '1'))
+    .mockImplementation(async (_id, _seq, from, inputs) =>
+      authoritative(initial, from, inputs)
+    )
+  const { result } = renderHook(() => useDuelSession(vi.fn()))
+  act(() => {
+    result.current.install(initial)
+    result.current.input.current.direction = 3
+  })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(700)
+  })
+  expect(submit).toHaveBeenCalledTimes(1)
+  expect(result.current.connection).toBe('reconnecting')
+  // Retry-After holds the next attempt back instead of hammering the limiter.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600)
+  })
+  expect(submit).toHaveBeenCalledTimes(1)
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600)
+  })
+  expect(submit).toHaveBeenCalledTimes(2)
+  const [first, retry] = submit.mock.calls
+  expect(retry[1]).toBe(first[1])
+  expect(retry[2]).toBe(0)
+  expect(retry[3].length).toBeGreaterThanOrEqual(first[3].length)
+  expect(retry[3].slice(0, first[3].length)).toEqual(first[3])
+  expect(fetchMatch).not.toHaveBeenCalled()
+  expect(result.current.state.current.players[0].cursor).toBeGreaterThanOrEqual(
+    first[3].length
+  )
+})
+
+it('sends the resignation with the fresh sequence after a rejected packet forced recovery', async () => {
+  const initial = playableMatch()
+  const recovered = authoritative(initial, 0, [])
+  recovered.you.seq = 5
+  const finished = structuredClone(recovered)
+  finished.status = 'finished'
+  finished.winner_slot = 2
+  vi.spyOn(pvpApi, 'getPvPMatch').mockResolvedValue(recovered)
+  const submit = vi
+    .spyOn(pvpApi, 'submitPvPInput')
+    .mockImplementation(async (_id, seq, _from, _inputs, quit) => {
+      if (seq !== 6) throw new Error('PvP input rejected')
+      return quit ? finished : recovered
+    })
+  const onFinish = vi.fn()
+  const { result } = renderHook(() => useDuelSession(onFinish))
+  act(() => {
+    result.current.install(initial)
+  })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(700)
+  })
+  expect(submit).toHaveBeenCalledOnce()
+  // Install re-seeded the sequence at 5 but the failed packet used 1; the
+  // resign must refetch first and then go out as seq 6 instead of looping.
+  await act(async () => {
+    await result.current.quit()
+  })
+  const last = submit.mock.calls.at(-1)
+  expect(last?.[1]).toBe(6)
+  expect(last?.[4]).toBe(true)
+  expect(result.current.match?.status).toBe('finished')
+  expect(onFinish).toHaveBeenCalled()
 })

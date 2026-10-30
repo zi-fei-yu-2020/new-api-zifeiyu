@@ -60,7 +60,47 @@ function countdown(milliseconds: number) {
     .padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`
 }
 
-export function DailyChallenge() {
+// Owns the once-per-second tick so the rest of the page does not re-render
+// with it, and asks for a fresh status once per reset boundary (retrying only
+// slowly) instead of on every tick while the old day is still being served.
+const RESET_REFETCH_RETRY_MS = 15_000
+function ResetCountdown(props: {
+  serverTime?: number
+  updatedAt: number
+  resetsAt?: number
+  paused: boolean
+  onReset: () => void
+}) {
+  const [clock, setClock] = useState(Date.now())
+  const fired = useRef({ resetsAt: 0, at: 0 })
+  const onReset = useRef(props.onReset)
+  onReset.current = props.onReset
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  const serverTime = props.serverTime
+  const resetsAt = props.resetsAt
+  let resetIn = 0
+  if (serverTime !== undefined && resetsAt !== undefined) {
+    resetIn = resetsAt - (serverTime + (clock - props.updatedAt))
+  }
+  const hasStatus = resetsAt !== undefined
+  useEffect(() => {
+    if (!hasStatus || resetIn > 0 || props.paused) return
+    const last = fired.current
+    const now = Date.now()
+    if (last.resetsAt === resetsAt && now - last.at < RESET_REFETCH_RETRY_MS) {
+      return
+    }
+    fired.current = { resetsAt: resetsAt ?? 0, at: now }
+    onReset.current()
+  }, [hasStatus, resetIn, props.paused, resetsAt])
+  return <>{countdown(resetIn)}</>
+}
+
+export function DailyChallenge(props: { visible?: boolean }) {
+  const visible = props.visible ?? true
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const status = useQuery(gameStatusQueryOptions)
@@ -91,7 +131,6 @@ export function DailyChallenge() {
   const { run, display, input, install } = session
   const { data: statusData, refetch: refetchStatus } = status
   const [confirm, setConfirm] = useState<'start' | 'quit' | null>(null)
-  const [clock, setClock] = useState(Date.now())
   const joystick = useRef<HTMLDivElement>(null)
   const arenaPanel = useRef<HTMLElement>(null)
   const [stick, setStick] = useState({ x: 0, y: 0 })
@@ -163,17 +202,6 @@ export function DailyChallenge() {
   useEffect(() => {
     if (statusData) install(statusData.run)
   }, [statusData, install])
-  useEffect(() => {
-    const timer = setInterval(() => setClock(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
-  const serverClock = status.data
-    ? status.data.server_time + (clock - status.dataUpdatedAt)
-    : clock
-  const resetIn = status.data ? status.data.resets_at - serverClock : 0
-  useEffect(() => {
-    if (statusData && resetIn <= 0 && !active) void refetchStatus()
-  }, [resetIn, active, statusData, refetchStatus])
   const seconds = Math.max(
     0,
     Math.ceil((gameDuration(display) - display.tick) / 10)
@@ -276,7 +304,13 @@ export function DailyChallenge() {
               {t('Next daily challenge')}
             </p>
             <p className='mt-1 font-mono text-xl tabular-nums'>
-              {countdown(resetIn)}
+              <ResetCountdown
+                serverTime={statusData?.server_time}
+                updatedAt={status.dataUpdatedAt}
+                resetsAt={statusData?.resets_at}
+                paused={active}
+                onReset={() => void refetchStatus()}
+              />
             </p>
           </div>
           <span className='text-muted-foreground self-end pb-1 text-xs'>
@@ -371,7 +405,7 @@ export function DailyChallenge() {
             <Arena
               state={session.state}
               input={input}
-              active={active}
+              active={active && visible}
               controlsDisabled={!!canUpgrade}
             />
             {!active && (

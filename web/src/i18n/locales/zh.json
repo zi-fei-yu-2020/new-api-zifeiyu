@@ -8067,6 +8067,14 @@
     "Your score": "你的得分",
     "duels": "场对战",
     "vs {{name}} (red)": "对阵 {{name}}（红方）",
-    "{{name}} (blue)": "{{name}}（蓝方）"
+    "{{name}} (blue)": "{{name}}（蓝方）",
+    "Deleted account": "已注销账号",
+    "PvP stake locked: {{quota}}": "PvP 赌注已冻结：{{quota}}",
+    "Unable to cancel the friendly duel": "无法取消好友对战",
+    "Unable to refresh PvP status. Showing the last known data.": "无法刷新 PvP 状态，正在显示最近一次的数据。",
+    "Cancel invite": "取消邀请",
+    "Invite cancelled": "邀请已取消",
+    "Get ready. The duel starts in {{seconds}}s": "准备！对战将在 {{seconds}} 秒后开始",
+    "A capped daily budget must cover at least the maximum reward for one run": "设置了上限的每日预算必须至少覆盖单次挑战的最高奖励"
   }
 }

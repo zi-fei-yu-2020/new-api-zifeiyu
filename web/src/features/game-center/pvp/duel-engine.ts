@@ -16,10 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-export const DUEL_VERSION = 1
+export const DUEL_VERSION = 2
 export const DUEL_DURATION = 900
 export const DUEL_TICK_MS = 100
 export const DUEL_MAX_INPUT_BATCH = 300
+// Mirrors model/pvp.go pvpLateGraceTicks: the server only commits the
+// simulation up to this many ticks behind its clock.
+export const DUEL_LATE_GRACE_TICKS = 20
 
 export type DuelBeamTarget = { x: number; y: number; kind: number }
 export type DuelPlayer = {
@@ -64,7 +67,7 @@ export type DuelState = {
   finished: boolean
 }
 
-export function newDuel(seed: number): DuelState {
+export function newDuel(seed: number, version = DUEL_VERSION): DuelState {
   const players: [DuelPlayer, DuelPlayer] = [
     {
       x: 2500,
@@ -110,7 +113,7 @@ export function newDuel(seed: number): DuelState {
     },
   ]
   return {
-    version: DUEL_VERSION,
+    version,
     tick: 0,
     rng: seed >>> 0,
     next_id: 0,
@@ -136,6 +139,8 @@ const directions = [
 
 function random(s: DuelState, n: number) {
   s.rng = (Math.imul(s.rng, 1664525) + 1013904223) >>> 0
+  // Version 2 scales the high bits; the low bits of a power-of-two LCG cycle.
+  if (s.version >= 2) return Math.floor((s.rng * n) / 4294967296)
   return s.rng % n
 }
 
@@ -327,9 +332,39 @@ function duelReapEnemies(s: DuelState) {
   s.enemies = kept
 }
 
-// Player one resolves first, so a token both players can reach in the same
-// tick goes to player one; magnets pull toward whichever player judges it.
+// Version 1: player one resolves first, so a token both players can reach in
+// the same tick goes to player one; magnets pull toward whichever player judges
+// it. Version 2 judges every token against the nearest player only, with exact
+// ties alternating by tick, so the result no longer depends on slot order.
 function duelCollectTokens(s: DuelState) {
+  if (s.version >= 2) {
+    const kept: DuelToken[] = []
+    for (const token of s.tokens) {
+      const dist2 = s.players.map((player) => {
+        const dx = player.x - token.x
+        const dy = player.y - token.y
+        return dx * dx + dy * dy
+      })
+      const nearest =
+        dist2[1] < dist2[0] || (dist2[1] === dist2[0] && s.tick % 2 === 1)
+          ? 1
+          : 0
+      const player = s.players[nearest]
+      const dist = Math.floor(Math.sqrt(dist2[nearest]))
+      if (dist < 450) {
+        player.collected += token.value
+        player.score += token.value * 3
+        continue
+      }
+      if (dist < 1400) {
+        token.x += Math.trunc(((player.x - token.x) * 220) / dist)
+        token.y += Math.trunc(((player.y - token.y) * 220) / dist)
+      }
+      kept.push(token)
+    }
+    s.tokens = kept
+    return
+  }
   for (const player of s.players) {
     const kept: DuelToken[] = []
     for (const token of s.tokens) {
@@ -413,19 +448,22 @@ export function buildDuelStreams(batches: DuelInputBatch[]) {
   return streams
 }
 
-// Mirrors model/pvp.go pvpAllowedTicks: how far server time let the
-// authoritative simulation advance when this batch arrived.
+// Mirrors model/pvp.go pvpCommitTicks(pvpAllowedTicks): how far the server
+// committed the authoritative simulation when this batch arrived.
 export function replayAllowedTicks(startedAt: number, receivedAt: number) {
   const elapsed = Math.floor((receivedAt - startedAt) / DUEL_TICK_MS)
-  return Math.max(0, Math.min(elapsed, DUEL_DURATION + DUEL_MAX_INPUT_BATCH))
+  const allowed = Math.max(
+    0,
+    Math.min(elapsed, DUEL_DURATION + DUEL_MAX_INPUT_BATCH)
+  )
+  return Math.max(0, allowed - DUEL_LATE_GRACE_TICKS)
 }
 
 // replayDuelTo rebuilds the authoritative duel exactly as the server ran it:
 // batches replay in arrival order and each one advances the simulation only to
-// the tick the server clock allowed at that moment. If an accepted batch starts
-// behind the current tick, the duel is rebuilt from the complete streams so
-// those inputs take effect through the same deterministic rollback as the
-// server instead of being acknowledged as neutral.
+// the tick the server committed at that moment. The server never rebuilds:
+// stale ticks of a late batch are stored as neutral, so appending the stored
+// inputs reproduces the settled duel.
 // target scrubs to an intermediate tick: batches that arrived later than that
 // tick do not contribute, and the gap fills with neutral ticks. The settled
 // end frame is the exception — a batch arriving after the deadline whose
@@ -434,10 +472,11 @@ export function replayDuelTo(
   seed: number,
   startedAt: number,
   batches: DuelInputBatch[],
-  target: number
+  target: number,
+  version = DUEL_VERSION
 ): DuelState {
   const ordered = [...batches].sort((a, b) => a.id - b.id)
-  let state = newDuel(seed)
+  const state = newDuel(seed, version)
   const streams: [number[], number[]] = [[], []]
   for (const batch of ordered) {
     const allowed = replayAllowedTicks(startedAt, batch.received_at)
@@ -445,9 +484,6 @@ export function replayDuelTo(
     const settled = target >= DUEL_DURATION && state.tick < DUEL_DURATION
     if (!arrived && !settled) continue
     streams[batch.player - 1].push(...batch.inputs)
-    if (batch.inputs.length > 0 && batch.from_tick < state.tick) {
-      state = newDuel(seed)
-    }
     advanceDuel(state, Math.min(allowed, target), streams[0], streams[1])
     if (batch.quit && arrived) forfeit(state, batch.player - 1)
   }
@@ -463,7 +499,8 @@ export function replayDuelTo(
 export function createDuelReplayCursor(
   seed: number,
   startedAt: number,
-  batches: DuelInputBatch[]
+  batches: DuelInputBatch[],
+  version = DUEL_VERSION
 ): (target: number) => DuelState {
   let state: DuelState | null = null
   let streams: [number[], number[]] = [[], []]
@@ -482,7 +519,7 @@ export function createDuelReplayCursor(
       return state
     }
 
-    state = replayDuelTo(seed, startedAt, batches, target)
+    state = replayDuelTo(seed, startedAt, batches, target, version)
     streams = buildDuelStreams(
       batches.filter(
         (batch) => replayAllowedTicks(startedAt, batch.received_at) <= target

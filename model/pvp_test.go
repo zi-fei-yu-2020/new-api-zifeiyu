@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,8 @@ func TestPvPDatabaseMatrix(t *testing.T) {
 			t.Run("replay-gate", func(t *testing.T) { testPvPReplayGate(t, db) })
 			t.Run("maintenance-resilience", func(t *testing.T) { testPvPMaintenanceResilience(t, db) })
 			t.Run("settings", func(t *testing.T) { testPvPSettings(t, db) })
+			t.Run("hardening", func(t *testing.T) { testPvPHardening(t, db) })
+			t.Run("timing", func(t *testing.T) { testPvPTiming(t, db) })
 			require.NoError(t, db.Migrator().DropTable(models...))
 		})
 	}
@@ -76,7 +79,7 @@ func TestPvPDatabaseMatrix(t *testing.T) {
 
 func pvpTestUser(t *testing.T, db *gorm.DB, id, quota int) {
 	t.Helper()
-	require.NoError(t, db.Create(&User{Id: id, Username: "pvp" + strings.Repeat("a", id%3) + string(rune('0'+id)), Password: "unusable", Status: common.UserStatusEnabled, Quota: quota, AffCode: "pvpaff" + string(rune('0'+id)), DisplayName: "Duelist " + string(rune('0'+id))}).Error)
+	require.NoError(t, db.Create(&User{Id: id, Username: "pvp" + strings.Repeat("a", id%3) + strconv.Itoa(id), Password: "unusable", Status: common.UserStatusEnabled, Quota: quota, AffCode: "pvpaff" + strconv.Itoa(id), DisplayName: "Duelist " + strconv.Itoa(id)}).Error)
 }
 
 func pvpPair(t *testing.T, db *gorm.DB, first, second, stake int, now time.Time) (*PvPMatchView, *PvPMatchView) {
@@ -220,7 +223,7 @@ func testPvPInputs(t *testing.T, db *gorm.DB) {
 	require.NotEqual(t, first.You.Secret, second.You.Secret)
 	require.Contains(t, first.Opponent.DisplayName, "Duelist")
 
-	now := started.Add(11 * time.Second) // match starts at +1s, so 100 ticks are allowed
+	now := started.Add(11 * time.Second) // the clock starts after the 4s countdown that follows the pairing at +1s, so 60 ticks are allowed
 	batch := make([]int, 10)
 	// Forged signatures, sequence replays and window violations all reject
 	// before any state changes.
@@ -233,7 +236,7 @@ func testPvPInputs(t *testing.T, db *gorm.DB) {
 	view, err := SubmitPvPInput(12, matchID, 1, 0, batch, false, pvpSigned(second.You.Secret, matchID, 2, 1, 0, batch, false), now)
 	require.NoError(t, err)
 	require.NotNil(t, view.State)
-	require.Equal(t, 100, view.State.Tick, "server time alone advances the duel")
+	require.Equal(t, 60, view.State.Tick, "server time alone advances the duel")
 	require.Equal(t, 10, view.You.Cursor)
 	var stored PvPInput
 	require.NoError(t, db.Where("match_id = ? AND player = 2", matchID).First(&stored).Error)
@@ -248,27 +251,34 @@ func testPvPInputs(t *testing.T, db *gorm.DB) {
 	_, err = SubmitPvPInput(99, matchID, 1, 0, batch, false, pvpSigned(second.You.Secret, matchID, 2, 1, 0, batch, false), now)
 	require.ErrorIs(t, err, ErrPvPNotFound)
 
-	// The opponent has already advanced the shared clock past these ticks. An
-	// accepted late batch must still move the left player instead of being
-	// acknowledged as neutral input and snapping the client back on sync.
+	// Anti-hindsight: the opponent's submit committed the simulation up to tick
+	// 40 (60 allowed minus the 20 tick grace). A batch reaching back into those
+	// ticks is accepted for sequencing but stored as neutral, so it cannot
+	// rewrite history.
 	moves := []int{3, 3, 3, 3, 3, 3, 3, 3, 3, 3}
-	moved, err := SubmitPvPInput(11, matchID, 1, 0, moves, false, pvpSigned(first.You.Secret, matchID, 1, 1, 0, moves, false), now)
+	stale, err := SubmitPvPInput(11, matchID, 1, 0, moves, false, pvpSigned(first.You.Secret, matchID, 1, 1, 0, moves, false), now)
 	require.NoError(t, err)
-	require.NotNil(t, moved.State)
-	require.Greater(t, moved.State.Players[0].X, 2500)
+	require.Equal(t, 10, stale.You.Cursor)
+	require.Equal(t, 2500, stale.State.Players[0].X, "stale input must not move the player")
+	var staleRow PvPInput
+	require.NoError(t, db.Where("match_id = ? AND player = 1 AND seq = 1", matchID).First(&staleRow).Error)
+	require.Equal(t, "[0,0,0,0,0,0,0,0,0,0]", staleRow.Inputs)
 
-	// Repeat the normal alternating submission order: the opponent advances
-	// first, then the left player's next rightward batch must still take effect.
-	previousX := moved.State.Players[0].X
-	nextAt := now.Add(600 * time.Millisecond)
+	// A client that is only slightly late still counts: catch up to tick 40 with
+	// neutral ticks, then deliver real input that lands inside the grace window.
+	catchUp := make([]int, 30)
+	_, err = SubmitPvPInput(11, matchID, 2, 10, catchUp, false, pvpSigned(first.You.Secret, matchID, 1, 2, 10, catchUp, false), now)
+	require.NoError(t, err)
+	nextAt := now.Add(600 * time.Millisecond) // 66 allowed, committed to 46
 	_, err = SubmitPvPInput(12, matchID, 2, 10, make([]int, 5), false, pvpSigned(second.You.Secret, matchID, 2, 2, 10, make([]int, 5), false), nextAt)
 	require.NoError(t, err)
-	moved, err = SubmitPvPInput(11, matchID, 2, 10, moves[:5], false, pvpSigned(first.You.Secret, matchID, 1, 2, 10, moves[:5], false), nextAt)
+	moved, err := SubmitPvPInput(11, matchID, 3, 40, moves, false, pvpSigned(first.You.Secret, matchID, 1, 3, 40, moves, false), nextAt)
 	require.NoError(t, err)
-	require.Greater(t, moved.State.Players[0].X, previousX)
+	require.Greater(t, moved.State.Players[0].X, 2500, "inputs inside the grace window take effect")
+	require.Less(t, moved.State.Tick, 67)
 
 	// A resignation loses on the spot and pays the whole pot to the winner.
-	final, err := SubmitPvPInput(11, matchID, 3, 15, nil, true, pvpSigned(first.You.Secret, matchID, 1, 3, 15, nil, true), nextAt)
+	final, err := SubmitPvPInput(11, matchID, 4, 50, nil, true, pvpSigned(first.You.Secret, matchID, 1, 4, 50, nil, true), nextAt)
 	require.NoError(t, err)
 	require.Equal(t, "finished", final.Status)
 	require.Equal(t, 2, final.WinnerSlot)
@@ -283,7 +293,7 @@ func testPvPInputs(t *testing.T, db *gorm.DB) {
 	require.NoError(t, db.Model(&PvPLedger{}).Where("kind = ?", "payout").Count(&payouts).Error)
 	require.EqualValues(t, 1, payouts)
 	// Settlement is idempotent: late duplicate packets pay nothing again.
-	repeat, err := SubmitPvPInput(11, matchID, 3, 15, nil, true, pvpSigned(first.You.Secret, matchID, 1, 3, 15, nil, true), nextAt)
+	repeat, err := SubmitPvPInput(11, matchID, 4, 50, nil, true, pvpSigned(first.You.Secret, matchID, 1, 4, 50, nil, true), nextAt)
 	require.NoError(t, err)
 	require.Equal(t, "finished", repeat.Status)
 	require.NoError(t, db.First(&b, 12).Error)
@@ -302,7 +312,7 @@ func testPvPInputs(t *testing.T, db *gorm.DB) {
 	encoded, err := common.Marshal(state)
 	require.NoError(t, err)
 	require.NoError(t, db.Model(&PvPMatch{}).Where("id = ?", match.ID).Updates(map[string]any{"state_json": string(encoded), "player1_cursor": 899, "player2_cursor": 899, "seq1": 1, "seq2": 1}).Error)
-	draw, err := SubmitPvPInput(13, match.ID, 2, 899, nil, false, pvpSigned(third.You.Secret, match.ID, 1, 2, 899, nil, false), started.Add(95*time.Second))
+	draw, err := SubmitPvPInput(13, match.ID, 2, 899, nil, false, pvpSigned(third.You.Secret, match.ID, 1, 2, 899, nil, false), started.Add(100*time.Second))
 	require.NoError(t, err)
 	require.Equal(t, 3, draw.WinnerSlot)
 	require.True(t, draw.Status == "finished")
@@ -441,7 +451,7 @@ func testPvPMaintenance(t *testing.T, db *gorm.DB) {
 	require.NoError(t, err)
 	require.NoError(t, db.Model(&PvPMatch{}).Where("id = ?", created.ID).Update("created_at", base.Add(-11*time.Minute).UnixMilli()).Error)
 
-	late := base.Add(125 * time.Second) // started_at+1s plus the 123s input window
+	late := base.Add(130 * time.Second) // countdown ends at +5s, plus the 123s input window
 	require.NoError(t, MaintainPvP(late))
 	var entry PvPQueueEntry
 	require.NoError(t, db.Where("user_id = ?", 31).First(&entry).Error)
@@ -458,16 +468,16 @@ func testPvPMaintenance(t *testing.T, db *gorm.DB) {
 	var match PvPMatch
 	require.NoError(t, db.First(&match, "id = ?", first.ID).Error)
 	require.Equal(t, "finished", match.Status)
-	require.Positive(t, match.WinnerSlot)
-	var winner, loser User
-	require.NoError(t, db.First(&winner, match.playerID(match.WinnerSlot)).Error)
-	require.NoError(t, db.First(&loser, match.playerID(3-match.WinnerSlot)).Error)
-	require.Equal(t, 150000, winner.Quota)
-	require.Equal(t, 50000, loser.Quota)
+	require.Equal(t, 3, match.WinnerSlot, "a double no-show voids the duel instead of picking an arbitrary winner")
+	var a, b User
+	require.NoError(t, db.First(&a, 33).Error)
+	require.NoError(t, db.First(&b, 34).Error)
+	require.Equal(t, 100000, a.Quota)
+	require.Equal(t, 100000, b.Quota)
 	// Repeated maintenance never double-settles a finished match.
 	require.NoError(t, MaintainPvP(late.Add(time.Minute)))
-	require.NoError(t, db.First(&winner, match.playerID(match.WinnerSlot)).Error)
-	require.Equal(t, 150000, winner.Quota)
+	require.NoError(t, db.First(&a, 33).Error)
+	require.Equal(t, 100000, a.Quota)
 }
 
 func testPvPSettings(t *testing.T, db *gorm.DB) {
@@ -742,7 +752,7 @@ func testPvPMaintenanceResilience(t *testing.T, db *gorm.DB) {
 	}))
 	t.Cleanup(func() { require.NoError(t, db.Callback().Update().Remove("test:fail_poisoned_pvp_refund")) })
 
-	require.NoError(t, MaintainPvP(base.Add(125*time.Second)), "a per-item failure must not abort the maintenance run")
+	require.NoError(t, MaintainPvP(base.Add(130*time.Second)), "a per-item failure must not abort the maintenance run")
 	var ticket PvPQueueEntry
 	require.NoError(t, db.Where("user_id = ?", 18).First(&ticket).Error)
 	require.Equal(t, "waiting", ticket.Status, "the poisoned refund rolls back and stays retryable")
@@ -755,14 +765,218 @@ func testPvPMaintenanceResilience(t *testing.T, db *gorm.DB) {
 	var match PvPMatch
 	require.NoError(t, db.First(&match, "id = ?", duel.ID).Error)
 	require.Equal(t, "finished", match.Status, "past-deadline duels are still force-settled")
-	require.Positive(t, match.WinnerSlot)
+	require.Equal(t, 3, match.WinnerSlot)
 
 	// With the poison gone the very next cycle settles the leftover ticket.
 	armed = false
-	require.NoError(t, MaintainPvP(base.Add(126*time.Second)))
+	require.NoError(t, MaintainPvP(base.Add(131*time.Second)))
 	require.NoError(t, db.Where("user_id = ?", 18).First(&ticket).Error)
 	require.Equal(t, "cancelled", ticket.Status)
 	var refunded User
 	require.NoError(t, db.First(&refunded, 18).Error)
 	require.Equal(t, 100000, refunded.Quota)
+}
+
+func pvpLogCount(t *testing.T, db *gorm.DB, userID int, fragment string) int64 {
+	t.Helper()
+	var count int64
+	require.NoError(t, db.Model(&Log{}).Where("user_id = ? AND content LIKE ?", userID, "%"+fragment+"%").Count(&count).Error)
+	return count
+}
+
+// Regression coverage for the queue-claim race, independent maintenance
+// phases, creator-side invite cancellation, invite-code normalisation, the
+// forfeit log gate, the finished-duel window and escrow logging.
+func testPvPHardening(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	base := time.Date(2026, 12, 10, 12, 0, 0, 0, gameZone)
+	require.NoError(t, SaveGameSettings(GameSettings{Enabled: true, RewardVersion: 2, PvpEnabled: true}))
+
+	// A maintenance snapshot taken before a cancel + re-queue at another stake
+	// (same ticket row id) must neither pair nor strand any escrow.
+	pvpTestUser(t, db, 81, 1000000)
+	pvpTestUser(t, db, 82, 60000)
+	for _, id := range []int{81, 82} {
+		_, queued, err := JoinPvPQueue(id, 50000, base)
+		require.NoError(t, err)
+		require.True(t, queued)
+	}
+	require.EqualValues(t, 1, pvpLogCount(t, db, 81, "stake locked"), "queue escrow is logged")
+	var first, second PvPQueueEntry
+	require.NoError(t, db.Where("user_id = ?", 81).First(&first).Error)
+	require.NoError(t, db.Where("user_id = ?", 82).First(&second).Error)
+	require.NoError(t, LeavePvPQueue(82, base.Add(time.Second)))
+	_, queued, err := JoinPvPQueue(82, 60000, base.Add(2*time.Second))
+	require.NoError(t, err)
+	require.True(t, queued)
+	created, err := pairPvPQueueEntries(&first, &second, base.Add(3*time.Second))
+	require.NoError(t, err, "losing the claim to a re-queue is a benign race")
+	require.False(t, created)
+	var matches int64
+	require.NoError(t, db.Model(&PvPMatch{}).Where("player1_id = ? OR player2_id = ?", 81, 81).Count(&matches).Error)
+	require.Zero(t, matches)
+	var ticket81, ticket82 PvPQueueEntry
+	require.NoError(t, db.Where("user_id = ?", 81).First(&ticket81).Error)
+	require.Equal(t, "waiting", ticket81.Status)
+	require.NoError(t, db.Where("user_id = ?", 82).First(&ticket82).Error)
+	require.Equal(t, "waiting", ticket82.Status)
+	require.Equal(t, 60000, ticket82.Stake)
+	mismatched := second
+	mismatched.Stake = 60000
+	created, err = pairPvPQueueEntries(&first, &mismatched, base.Add(4*time.Second))
+	require.NoError(t, err)
+	require.False(t, created, "different stakes never pair")
+	require.NoError(t, LeavePvPQueue(81, base.Add(5*time.Second)))
+	require.NoError(t, LeavePvPQueue(82, base.Add(5*time.Second)))
+	var wallet User
+	require.NoError(t, db.First(&wallet, 82).Error)
+	require.Equal(t, 60000, wallet.Quota)
+
+	// Friendly rooms: the creator can cancel, once; codes are case-insensitive.
+	pvpTestUser(t, db, 83, 200000)
+	pvpTestUser(t, db, 84, 200000)
+	room, err := CreatePvPFriendly(83, 50000, base)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, pvpLogCount(t, db, 83, "stake locked"))
+	require.NoError(t, CancelPvPFriendly(83, base.Add(time.Second)))
+	require.NoError(t, CancelPvPFriendly(83, base.Add(2*time.Second)), "cancelling twice is a no-op")
+	wallet = User{}
+	require.NoError(t, db.First(&wallet, 83).Error)
+	require.Equal(t, 200000, wallet.Quota)
+	var cancelled PvPMatch
+	require.NoError(t, db.First(&cancelled, "id = ?", room.ID).Error)
+	require.Equal(t, "cancelled", cancelled.Status)
+	var refunds int64
+	require.NoError(t, db.Model(&PvPLedger{}).Where("match_id = ? AND kind = ?", room.ID, "refund").Count(&refunds).Error)
+	require.EqualValues(t, 1, refunds)
+	_, err = JoinPvPFriendly(84, *room.InviteCode, base.Add(3*time.Second))
+	require.ErrorIs(t, err, ErrPvPInviteExpired)
+	room, err = CreatePvPFriendly(83, 50000, base.Add(4*time.Second))
+	require.NoError(t, err, "a cancelled room frees the creator")
+	joined, err := JoinPvPFriendly(84, "  "+strings.ToUpper(*room.InviteCode)+" ", base.Add(5*time.Second))
+	require.NoError(t, err, "invite codes are normalised before lookup")
+	require.Equal(t, "playing", joined.Status)
+	require.NoError(t, CancelPvPFriendly(83, base.Add(6*time.Second)))
+	wallet = User{}
+	require.NoError(t, db.First(&wallet, 83).Error)
+	require.Equal(t, 150000, wallet.Quota, "a joined room can no longer be cancelled")
+
+	// An early resignation logs the forfeit; a resignation that arrives after
+	// the clock already ended the duel does not.
+	pvpTestUser(t, db, 85, 100000)
+	pvpTestUser(t, db, 86, 100000)
+	pvpTestUser(t, db, 87, 100000)
+	pvpTestUser(t, db, 88, 100000)
+	early, _ := pvpPair(t, db, 85, 86, 50000, base)
+	quitAt := base.Add(30 * time.Second)
+	done, err := SubmitPvPInput(85, early.ID, 1, 0, nil, true, pvpSigned(early.You.Secret, early.ID, 1, 1, 0, nil, true), quitAt)
+	require.NoError(t, err)
+	require.Equal(t, 2, done.WinnerSlot)
+	require.EqualValues(t, 1, pvpLogCount(t, db, 86, "opponent forfeited"))
+	late, _ := pvpPair(t, db, 87, 88, 50000, base)
+	lateAt := base.Add(100 * time.Second)
+	done, err = SubmitPvPInput(87, late.ID, 1, 0, nil, true, pvpSigned(late.You.Secret, late.ID, 1, 1, 0, nil, true), lateAt)
+	require.NoError(t, err)
+	require.Equal(t, "finished", done.Status)
+	require.Zero(t, pvpLogCount(t, db, 87, "opponent forfeited")+pvpLogCount(t, db, 88, "opponent forfeited"), "the clock decided this duel, not the resignation")
+
+	// A settled duel only stays the caller's current match for a short window.
+	status, err := GetPvPStatus(87, lateAt.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, status.Match)
+	require.Equal(t, "finished", status.Match.Status)
+	require.Positive(t, status.Match.FinishedAt)
+	status, err = GetPvPStatus(87, lateAt.Add(pvpFinishedViewWindow+time.Second))
+	require.NoError(t, err)
+	require.Nil(t, status.Match)
+
+	// Refunds and force-settlement never depend on the settings option.
+	pvpTestUser(t, db, 89, 100000)
+	pvpTestUser(t, db, 90, 100000)
+	_, queued, err = JoinPvPQueue(89, 50000, base)
+	require.NoError(t, err)
+	require.True(t, queued)
+	require.NoError(t, db.Model(&PvPQueueEntry{}).Where("user_id = ?", 89).Update("enqueued_at", base.Add(-11*time.Minute).UnixMilli()).Error)
+	stale, err := CreatePvPFriendly(90, 50000, base)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&PvPMatch{}).Where("id = ?", stale.ID).Update("created_at", base.Add(-11*time.Minute).UnixMilli()).Error)
+	require.NoError(t, db.Model(&Option{}).Where(&Option{Key: "game_center"}).Update("value", "{broken").Error)
+	resetGameCaches()
+	require.Error(t, MaintainPvP(base.Add(time.Second)), "the broken settings are reported")
+	wallet = User{}
+	require.NoError(t, db.First(&wallet, 89).Error)
+	require.Equal(t, 100000, wallet.Quota, "stale tickets refund without readable settings")
+	wallet = User{}
+	require.NoError(t, db.First(&wallet, 90).Error)
+	require.Equal(t, 100000, wallet.Quota, "expired invites refund without readable settings")
+	require.NoError(t, SaveGameSettings(GameSettings{Enabled: true, RewardVersion: 2, PvpEnabled: true}))
+}
+
+// Start countdown, the late-input grace window that keeps speculative neutral
+// ticks from deciding a duel, and presence-based force-finish.
+func testPvPTiming(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	base := time.Date(2026, 12, 11, 12, 0, 0, 0, gameZone)
+	for id := 91; id <= 96; id++ {
+		pvpTestUser(t, db, id, 100000)
+	}
+
+	// The clock stays at zero until the countdown has elapsed.
+	first, second := pvpPair(t, db, 91, 92, 50000, base)
+	startsAt := base.Add(time.Second + pvpStartCountdown)
+	require.Equal(t, startsAt.UnixMilli(), first.StartedAt, "started_at is the future first tick")
+	require.Greater(t, first.StartedAt, first.ServerTime)
+	var match PvPMatch
+	require.NoError(t, db.First(&match, "id = ?", first.ID).Error)
+	assert.Zero(t, pvpAllowedTicks(&match, startsAt.Add(-time.Millisecond)))
+	assert.Equal(t, 10, pvpAllowedTicks(&match, startsAt.Add(time.Second)))
+	early := base.Add(3 * time.Second)
+	three := []int{0, 0, 0}
+	_, err := SubmitPvPInput(92, second.ID, 1, 0, three, false, pvpSigned(second.You.Secret, second.ID, 2, 1, 0, three, false), early)
+	require.ErrorIs(t, err, ErrPvPInput, "ticks beyond the barrier cannot be pre-submitted")
+	two := []int{0, 0}
+	view, err := SubmitPvPInput(92, second.ID, 1, 0, two, false, pvpSigned(second.You.Secret, second.ID, 2, 1, 0, two, false), early)
+	require.NoError(t, err)
+	require.Zero(t, view.State.Tick, "the duel does not advance during the countdown")
+
+	// Player two is one hit from death and an enemy stands on them. Under
+	// neutral fill they die on tick one, but inside the grace window the late
+	// batch could still dodge, so nothing may settle until the tick is final.
+	doomed := tokengame.NewDuel(uint32(match.Seed))
+	doomed.Players[1].HP = 1
+	doomed.Enemies = []tokengame.DuelEnemy{{ID: 1, X: doomed.Players[1].X, Y: doomed.Players[1].Y, HP: 4}}
+	doomed.NextID = 1
+	encoded, err := common.Marshal(doomed)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&PvPMatch{}).Where("id = ?", match.ID).Update("state_json", string(encoded)).Error)
+	idle := []int{0}
+	pending, err := SubmitPvPInput(91, first.ID, 1, 0, idle, false, pvpSigned(first.You.Secret, first.ID, 1, 1, 0, idle, false), startsAt.Add(1500*time.Millisecond))
+	require.NoError(t, err)
+	require.Equal(t, "playing", pending.Status, "an opponent tick still inside the grace window cannot decide the duel")
+	require.Zero(t, pending.You.Cursor-1)
+	settled, err := SubmitPvPInput(91, first.ID, 2, 1, idle, false, pvpSigned(first.You.Secret, first.ID, 1, 2, 1, idle, false), startsAt.Add(3*time.Second))
+	require.NoError(t, err)
+	require.Equal(t, "finished", settled.Status, "once the grace has elapsed the neutral ticks are final")
+	require.Equal(t, 1, settled.WinnerSlot)
+
+	// Double no-show voids the duel (covered by the maintenance tests); a single
+	// silent player forfeits to the one who is still present.
+	third, _ := pvpPair(t, db, 93, 94, 50000, base)
+	require.NoError(t, db.Create(&PvPInput{MatchID: third.ID, Player: 1, Seq: 1, FromTick: 0, Inputs: "[]", ReceivedAt: startsAt.Add(100 * time.Second).UnixMilli()}).Error)
+	require.NoError(t, db.Model(&PvPMatch{}).Where("id = ?", third.ID).Updates(map[string]any{"seq1": 1}).Error)
+	sweep := startsAt.Add(124 * time.Second)
+	require.NoError(t, MaintainPvP(sweep))
+	match = PvPMatch{}
+	require.NoError(t, db.First(&match, "id = ?", third.ID).Error)
+	require.Equal(t, "finished", match.Status)
+	require.Equal(t, 1, match.WinnerSlot, "the present player wins against the one who left")
+	var present, absent User
+	require.NoError(t, db.First(&present, 93).Error)
+	require.NoError(t, db.First(&absent, 94).Error)
+	require.Equal(t, 150000, present.Quota)
+	require.Equal(t, 50000, absent.Quota)
+	require.EqualValues(t, 1, pvpLogCount(t, db, 93, "opponent forfeited"))
+	require.NoError(t, MaintainPvP(sweep.Add(time.Minute)))
+	require.NoError(t, db.First(&present, 93).Error)
+	require.Equal(t, 150000, present.Quota, "force-finish is idempotent")
 }

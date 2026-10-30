@@ -18,7 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, it } from 'vitest'
 
-import fixtures from '../../../../../../pkg/tokengame/testdata/duel-replays.json'
+import fixtures from '../../../../../../pkg/tokengame/testdata/duel-replays-v2.json'
+import legacyFixtures from '../../../../../../pkg/tokengame/testdata/duel-replays.json'
 import {
   advanceDuel,
   buildDuelStreams,
@@ -33,9 +34,9 @@ import {
 } from '../duel-engine'
 
 describe('authoritative duel replay contract', () => {
-  for (const fixture of fixtures) {
-    it(`matches the Go duel replay for seed ${fixture.seed} after ${fixture.inputs1.length} inputs`, () => {
-      const state = newDuel(fixture.seed)
+  for (const fixture of [...legacyFixtures, ...fixtures]) {
+    it(`matches the Go duel v${fixture.state.version} replay for seed ${fixture.seed} after ${fixture.inputs1.length} inputs`, () => {
+      const state = newDuel(fixture.seed, fixture.state.version)
       for (let i = 0; i < fixture.inputs1.length; i++) {
         step(state, fixture.inputs1[i], fixture.inputs2[i])
       }
@@ -95,7 +96,7 @@ it('rebuilds the settled state from on-time batches exactly like raw streams', (
   expect(replayed).toEqual(expected)
 })
 
-it('rolls back accepted late inputs so replay matches the authoritative state', () => {
+it('replays stored late inputs as neutral without rewriting history', () => {
   const seed = 42
   const startedAt = 1_000_000
   const batches: DuelInputBatch[] = [
@@ -105,7 +106,7 @@ it('rolls back accepted late inputs so replay matches the authoritative state', 
       seq: 1,
       from_tick: 0,
       inputs: [3],
-      received_at: startedAt + 10 * DUEL_TICK_MS,
+      received_at: startedAt + 30 * DUEL_TICK_MS,
       quit: false,
     },
     {
@@ -113,23 +114,22 @@ it('rolls back accepted late inputs so replay matches the authoritative state', 
       player: 2,
       seq: 1,
       from_tick: 0,
-      inputs: [5, 5],
-      received_at: startedAt + 30 * DUEL_TICK_MS,
+      inputs: [0, 0],
+      received_at: startedAt + 50 * DUEL_TICK_MS,
       quit: false,
     },
   ]
-  // Player two submitted moves for ticks 0-1 after the shared clock had
-  // passed them. The accepted inputs still take effect through deterministic
-  // rollback, and replay must produce the same state as the full streams.
+  // Player two's moves for ticks 0-1 arrived past the commit boundary, so the
+  // server stored them as neutral. Replay appends the stored streams and
+  // matches the settled state instead of rolling the duel back.
   const state = replayDuelTo(seed, startedAt, batches, 30)
   expect(state.tick).toBe(30)
   expect(state.players[0].x).toBeGreaterThan(2500)
   expect(state.players[1].x).toBe(7500)
-  expect(state.players[1].y).toBeGreaterThan(3500)
   // Scrubbing before the first batch arrived hides it entirely.
   expect(replayDuelTo(seed, startedAt, batches, 5).players[0].x).toBe(2500)
   const expected = newDuel(seed)
-  advanceDuel(expected, 30, [3], [5, 5])
+  advanceDuel(expected, 30, [3], [0, 0])
   expect(state).toEqual(expected)
 })
 
@@ -142,7 +142,7 @@ it('applies a recorded resignation at its arrival tick and not before', () => {
       seq: 1,
       from_tick: 0,
       inputs: [],
-      received_at: startedAt + 5 * DUEL_TICK_MS,
+      received_at: startedAt + 25 * DUEL_TICK_MS,
       quit: true,
     },
   ]
@@ -193,7 +193,7 @@ it('matches full replay while incrementally advancing across arrivals and late i
       seq: 1,
       from_tick: 0,
       inputs: [3, 3],
-      received_at: startedAt + 5 * DUEL_TICK_MS,
+      received_at: startedAt + 25 * DUEL_TICK_MS,
       quit: false,
     },
     {
@@ -202,7 +202,7 @@ it('matches full replay while incrementally advancing across arrivals and late i
       seq: 1,
       from_tick: 0,
       inputs: [5, 5],
-      received_at: startedAt + 12 * DUEL_TICK_MS,
+      received_at: startedAt + 32 * DUEL_TICK_MS,
       quit: false,
     },
     {
@@ -211,7 +211,7 @@ it('matches full replay while incrementally advancing across arrivals and late i
       seq: 2,
       from_tick: 2,
       inputs: [19],
-      received_at: startedAt + 20 * DUEL_TICK_MS,
+      received_at: startedAt + 40 * DUEL_TICK_MS,
       quit: false,
     },
   ]
@@ -247,4 +247,24 @@ it('uses a full replay for the settled end frame after a forward seek', () => {
 
   expect(end).toEqual(replayDuelTo(11, startedAt, [], DUEL_DURATION))
   expect(end).not.toBe(beforeEnd)
+})
+
+it('keeps version 1 duels on the legacy rules and defaults new duels to version 2', () => {
+  expect(newDuel(7).version).toBe(2)
+  expect(newDuel(7, 1).version).toBe(1)
+  // Player two is strictly nearer, so only version 2 hands it the token.
+  for (const [version, owner] of [
+    [1, 0],
+    [2, 1],
+  ] as const) {
+    const state = newDuel(42, version)
+    state.tick = 10
+    state.players[0].x = 4000
+    state.players[1].x = 4600
+    state.players[0].y = state.players[1].y = 3500
+    state.tokens = [{ x: 4400, y: 3500, value: 10 }]
+    step(state, 0, 0)
+    expect(state.players[owner].collected).toBe(10)
+    expect(state.players[1 - owner].collected).toBe(0)
+  }
 })

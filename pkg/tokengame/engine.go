@@ -5,7 +5,10 @@ import "math"
 const Duration = 1800
 const TickMillis = 100
 const MaxInputBatch = 300
-const Version = 3
+
+// Version 4 draws random numbers from the high bits of the LCG; older runs keep
+// the low-bit modulo so stored runs and replays simulate unchanged.
+const Version = 4
 const SprintDuration = 900
 const UpgradePauseTicks = 100
 const MaxTokens = 187 // Legacy ceiling, retained for existing runs.
@@ -64,6 +67,10 @@ func New(seed uint32) State {
 }
 func (s *State) random(n int) int {
 	s.RNG = s.RNG*1664525 + 1013904223
+	if s.Version >= 4 {
+		// The low bits of a power-of-two LCG have tiny periods; scale the high bits.
+		return int(uint64(s.RNG) * uint64(n) >> 32)
+	}
 	return int(uint64(s.RNG) % uint64(n))
 }
 func (s *State) Duration() int {

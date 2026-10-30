@@ -99,6 +99,7 @@ func TestGameDatabaseMatrix(t *testing.T) {
 						testGameNetworkRecovery(t, time.Date(2026, 11, 21, 12, 0, 0, 0, gameZone))
 					})
 					t.Run("maintenance_isolation", testGameMaintenanceIsolation)
+					t.Run("audit_regressions", testGameAuditRegressions)
 					// Retiring studio controls must not rewrite or delete legacy option data.
 					require.NoError(t, db.Create(&Option{Key: "studio_setting.image_studio_enabled", Value: "false"}).Error)
 					require.NoError(t, SaveGameSettings(GameSettings{Enabled: true, RewardVersion: 1, RewardsEnabled: true, DailyQuota: 200, DailyBudget: 300, WeeklyBudget: 1000}))
@@ -154,7 +155,7 @@ func TestGameDatabaseMatrix(t *testing.T) {
 					resumed, err := GetTodayGame(1, now.Add(8*time.Second))
 					require.NoError(t, err)
 					require.Equal(t, run.ID, resumed.ID)
-					require.Equal(t, 80, resumed.State.Tick)
+					require.Equal(t, 10, resumed.State.Tick, "a status read must not fast-forward a run that is within one input batch")
 					// Finish real server simulations from a controlled late-game checkpoint.
 					for userID := 1; userID <= 2; userID++ {
 						r, e := StartGame(userID, now)
@@ -535,7 +536,12 @@ func verifyGameRewardActivation(t *testing.T, db *gorm.DB) {
 	require.NoError(t, err)
 	settings.RewardsEnabled = true
 	settings.DailyBudget = 1
-	require.NoError(t, SaveGameSettings(settings))
+	require.ErrorIs(t, SaveGameSettings(settings), ErrGameSettings, "a cap below one run's reservation would block every start")
+	// A stored legacy configuration like this must still load and fail closed.
+	legacyRaw, err := common.Marshal(settings)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&Option{}).Where(&Option{Key: "game_center"}).Update("value", string(legacyRaw)).Error)
+	resetGameCaches()
 	_, err = StartGame(308, limitedDay)
 	require.ErrorIs(t, err, ErrGameBudget)
 	var attempts int64
@@ -580,12 +586,17 @@ func testGameUpgradeClock(t *testing.T, now time.Time) {
 	resumed, err := GetTodayGame(777, now.Add(24*time.Second))
 	require.NoError(t, err)
 	require.Equal(t, 200, resumed.State.Tick)
-	require.Equal(t, 40, resumed.State.PauseTicks)
-	selected, err := AdvanceGame(777, view.ID, 240, []int{32}, false, now.Add(24100*time.Millisecond))
+	require.Equal(t, 20, resumed.State.PauseTicks, "a status read must not advance the stored run")
+	require.Equal(t, 220, resumed.State.Cursor())
+	var stored GameRun
+	require.NoError(t, DB.First(&stored, "id = ?", view.ID).Error)
+	require.Equal(t, paused.StateJSON, stored.StateJSON)
+	pausedInputs := append(make([]int, 20), 32)
+	selected, err := AdvanceGame(777, view.ID, 220, pausedInputs, false, now.Add(24100*time.Millisecond))
 	require.NoError(t, err)
 	require.Equal(t, 200, selected.State.Tick)
 	require.Equal(t, 1, selected.State.Upgrades)
-	replay, err := AdvanceGame(777, view.ID, 240, []int{32}, false, now.Add(24100*time.Millisecond))
+	replay, err := AdvanceGame(777, view.ID, 220, pausedInputs, false, now.Add(24100*time.Millisecond))
 	require.NoError(t, err)
 	require.Equal(t, selected.State, replay.State, "repeated input must not grant another upgrade")
 	_, err = AdvanceGame(777, view.ID, 241, make([]int, 50), false, now.Add(24100*time.Millisecond))

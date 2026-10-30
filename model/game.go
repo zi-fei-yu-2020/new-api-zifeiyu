@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -20,6 +21,55 @@ var ErrGameInput = errors.New("Game progress is out of sync. Reconnect to contin
 var ErrGameBudget = errors.New("The daily reward budget cannot cover another run")
 var ErrGameSettings = errors.New("Invalid game reward settings")
 var gameSettingsMutex sync.Mutex
+
+// patchMutex serializes the load-merge-save of PatchGameSettings so concurrent
+// partial updates cannot overwrite each other.
+var patchMutex sync.Mutex
+
+// Settings and rankings are polled by every open game page, so each instance
+// serves them from a short in-process cache. Entries are bound to the database
+// handle that produced them.
+var (
+	gameSettingsTTL   = 3 * time.Second
+	gameRankingTTL    = 10 * time.Second
+	gameSettingsCache struct {
+		sync.RWMutex
+		db       *gorm.DB
+		settings GameSettings
+		expires  time.Time
+	}
+	gameRankingCache = struct {
+		sync.Mutex
+		entries map[string]gameRankingCacheEntry
+	}{entries: map[string]gameRankingCacheEntry{}}
+	gameRunFailures = struct {
+		sync.Mutex
+		counts map[string]int
+	}{counts: map[string]int{}}
+)
+
+type gameRankingCacheEntry struct {
+	db      *gorm.DB
+	rows    []GameRank
+	expires time.Time
+}
+
+const gameRankingLimit = 100
+const gameRankingCacheLimit = 64
+
+// A run is only given up on after repeated failures AND a full day past its
+// deadline, so a temporary rollback to an older build never discards live runs.
+const gameRunMaxFailures = 5
+const gameRunAbandonGrace = 24 * time.Hour
+
+func resetGameCaches() {
+	gameSettingsCache.Lock()
+	gameSettingsCache.db = nil
+	gameSettingsCache.Unlock()
+	gameRankingCache.Lock()
+	gameRankingCache.entries = map[string]gameRankingCacheEntry{}
+	gameRankingCache.Unlock()
+}
 
 // One unique daily attempt per account, enforced by the database on every instance.
 type GameRun struct {
@@ -147,8 +197,16 @@ func (period GamePeriod) weeklyPrizes() []int {
 	return prizes
 }
 
-func GetGameSettings() (GameSettings, error) {
-	settings := GameSettings{Enabled: true, RewardVersion: 2, WeeklyRewardVersion: 1, FirstTokenQuota: common.QuotaRound(5 * common.QuotaPerUnit), SubsequentTokenQuota: common.QuotaRound(common.QuotaPerUnit / 2), DailyBudget: 0, WeeklyBudget: 50000, PvpEnabled: true, PvpMinStake: common.QuotaRound(common.QuotaPerUnit / 10), PvpMaxStake: common.QuotaRound(100 * common.QuotaPerUnit)}
+func defaultGameSettings() GameSettings {
+	return GameSettings{Enabled: true, RewardVersion: 2, WeeklyRewardVersion: 1, FirstTokenQuota: common.QuotaRound(5 * common.QuotaPerUnit), SubsequentTokenQuota: common.QuotaRound(common.QuotaPerUnit / 2), DailyBudget: 0, WeeklyBudget: 50000, PvpEnabled: true, PvpMinStake: common.QuotaRound(common.QuotaPerUnit / 10), PvpMaxStake: common.QuotaRound(100 * common.QuotaPerUnit)}
+}
+
+// loadGameSettings reads the stored settings, bypassing the cache. Stored
+// settings only need to be structurally valid; the cross-field rules apply when
+// an administrator saves, so a configuration accepted by an earlier version
+// never takes the game offline.
+func loadGameSettings() (GameSettings, error) {
+	settings := defaultGameSettings()
 	var option Option
 	err := DB.Where(&Option{Key: "game_center"}).First(&option).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -159,10 +217,28 @@ func GetGameSettings() (GameSettings, error) {
 			return settings, err
 		}
 	}
-	if err = ValidateGameSettings(settings); err != nil {
+	if err = validateGameSettingsBounds(settings); err != nil {
 		return settings, err
 	}
 	return normalizeGameSettings(settings), nil
+}
+
+func GetGameSettings() (GameSettings, error) {
+	gameSettingsCache.RLock()
+	if gameSettingsCache.db == DB && DB != nil && time.Now().Before(gameSettingsCache.expires) {
+		cached := gameSettingsCache.settings
+		gameSettingsCache.RUnlock()
+		return cached, nil
+	}
+	gameSettingsCache.RUnlock()
+	settings, err := loadGameSettings()
+	if err != nil {
+		return settings, err
+	}
+	gameSettingsCache.Lock()
+	gameSettingsCache.db, gameSettingsCache.settings, gameSettingsCache.expires = DB, settings, time.Now().Add(gameSettingsTTL)
+	gameSettingsCache.Unlock()
+	return settings, nil
 }
 
 // GameBudgetView reports frozen reward rules once active, or the current
@@ -236,7 +312,22 @@ func GetGameBudgets(settings GameSettings, now time.Time) (GameBudgetView, error
 	}
 	return view, nil
 }
+
+// ValidateGameSettings is the admin-facing check: the structural bounds plus
+// the rules that keep a saved configuration from blocking every run.
 func ValidateGameSettings(settings GameSettings) error {
+	if err := validateGameSettingsBounds(settings); err != nil {
+		return err
+	}
+	// A positive daily cap smaller than one run's maximum reservation would
+	// reject every start. Zero keeps its documented meaning of no cap.
+	if settings.RewardsEnabled && settings.RewardVersion != 1 && settings.DailyBudget > 0 &&
+		settings.DailyBudget < GameTokenReward(tokengame.SprintMaxTokens, settings.FirstTokenQuota, settings.SubsequentTokenQuota) {
+		return ErrGameSettings
+	}
+	return nil
+}
+func validateGameSettingsBounds(settings GameSettings) error {
 	if settings.WeeklyRewardVersion < 0 || settings.WeeklyRewardVersion > 2 || settings.WeeklyFirstQuota < 0 || settings.WeeklySecondQuota < 0 || settings.WeeklyThirdQuota < 0 || settings.WeeklyFirstQuota > 1000000000 || settings.WeeklySecondQuota > 1000000000 || settings.WeeklyThirdQuota > 1000000000 {
 		return ErrGameSettings
 	}
@@ -308,7 +399,36 @@ func saveGameSettingsAt(settings GameSettings, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	defer resetGameSettingsCache()
 	return updateOptionMap("game_center", string(value))
+}
+
+func resetGameSettingsCache() {
+	gameSettingsCache.Lock()
+	gameSettingsCache.db = nil
+	gameSettingsCache.Unlock()
+}
+
+// PatchGameSettings merges a partial JSON document onto the current settings,
+// saves the result and returns the stored value. Omitted fields keep their
+// current value instead of being reset.
+func PatchGameSettings(patch []byte) (GameSettings, error) {
+	patchMutex.Lock()
+	defer patchMutex.Unlock()
+	// An unreadable stored configuration must stay repairable, so fall back
+	// to the defaults GetGameSettings starts from.
+	settings, err := loadGameSettings()
+	if err != nil {
+		settings = defaultGameSettings()
+	}
+	if err := common.Unmarshal(patch, &settings); err != nil {
+		return settings, ErrGameSettings
+	}
+	settings.RewardVersion = 2
+	if err := SaveGameSettings(settings); err != nil {
+		return settings, err
+	}
+	return loadGameSettings()
 }
 func GameTokenReward(count, first, subsequent int) int {
 	if count <= 0 {
@@ -354,14 +474,27 @@ func GetTodayGame(userID int, now time.Time) (*GameView, error) {
 	if err != nil {
 		return nil, err
 	}
-	if run.Status == "running" {
-		view, err := AdvanceGame(userID, run.ID, -1, nil, false, now)
-		if err == nil && view.Day != day && view.Status != "running" {
-			return nil, nil
-		}
-		return view, err
+	if run.Status != "running" {
+		return gameView(&run, now)
 	}
-	return gameView(&run, now)
+	view, err := gameView(&run, now)
+	if err != nil {
+		return nil, err
+	}
+	// Reads leave a live run alone, so a batch still in flight is applied to
+	// the stored state instead of being swallowed by idle ticks. Time is only
+	// forced forward where the input path would force it too: when the client
+	// has fallen more than one batch behind or the input window has closed.
+	elapsed := max(int64(0), (now.UnixMilli()-run.StartedAt)/tokengame.TickMillis)
+	allowed := int(min(int64(view.State.ClockLimit()), elapsed))
+	if allowed-view.State.Cursor() <= tokengame.MaxInputBatch && elapsed < int64(view.State.ClockLimit()+tokengame.MaxInputBatch) {
+		return view, nil
+	}
+	view, err = AdvanceGame(userID, run.ID, -1, nil, false, now)
+	if err == nil && view.Day != day && view.Status != "running" {
+		return nil, nil
+	}
+	return view, err
 }
 func StartGame(userID int, now time.Time) (*GameView, error) {
 	settings, err := GetGameSettings()
@@ -407,7 +540,7 @@ func StartGame(userID int, now time.Time) (*GameView, error) {
 				return err
 			}
 		}
-		if settings.WeeklyRewardVersion >= 2 && settings.RewardsEnabled {
+		if settings.RewardsEnabled {
 			if err := lockForUpdate(tx).First(&weekly, "id = ?", weekly.ID).Error; err != nil {
 				return err
 			}
@@ -504,17 +637,20 @@ func AdvanceGame(userID int, id string, from int, inputs []int, quit bool, now t
 		} else {
 			return nil
 		}
+		// A result reached before the quit request is final; quit only abandons
+		// a run that is still in progress.
 		if quit {
 			for state.Cursor() < allowed && !state.Done() {
 				state.Step(0)
 			}
 		}
+		abandon := quit && !state.Done()
 		if state.Done() || quit {
 			run.Status = "defeated"
 			if state.Tick >= state.Duration() && state.HP > 0 {
 				run.Status = "survived"
 			}
-			if quit {
+			if abandon {
 				run.Status = "abandoned"
 			}
 			run.Score = state.Score
@@ -550,7 +686,7 @@ func AdvanceGame(userID int, id string, from int, inputs []int, quit bool, now t
 			}
 			// Existing version-one runs retain their original fixed reward.
 
-			if run.RewardVersion < 2 && !quit && state.Tick >= 300 && state.Kills >= 3 {
+			if run.RewardVersion < 2 && !abandon && state.Tick >= 300 && state.Kills >= 3 {
 				var period GamePeriod
 				if err := lockForUpdate(tx).First(&period, "id = ?", "day:"+run.Day).Error; err != nil {
 					return err
@@ -574,6 +710,9 @@ func AdvanceGame(userID int, id string, from int, inputs []int, quit bool, now t
 		data, err := common.Marshal(state)
 		if err != nil {
 			return err
+		}
+		if run.Status == "running" && string(data) == run.StateJSON {
+			return nil
 		}
 		run.StateJSON = string(data)
 		return tx.Save(&run).Error
@@ -620,6 +759,8 @@ type GameRank struct {
 	Runs   int    `json:"runs"`
 	Rank   int    `json:"rank"`
 	IsMe   bool   `gorm:"-" json:"is_me"`
+	// FinishedAt is the latest finish time, used only to rank one player.
+	FinishedAt int64 `gorm:"->" json:"-"`
 }
 
 func gameRanking(tx *gorm.DB, period string, weekly bool) ([]GameRank, error) {
@@ -628,23 +769,78 @@ func gameRanking(tx *gorm.DB, period string, weekly bool) ([]GameRank, error) {
 	if weekly {
 		column = "week"
 	}
-	err := tx.Table("game_runs").Select("game_runs.user_id, COALESCE(NULLIF(users.display_name, ''), 'Player') AS name, SUM(game_runs.score) AS score, COUNT(*) AS runs").Joins("JOIN users ON users.id = game_runs.user_id AND users.deleted_at IS NULL AND users.status = ?", common.UserStatusEnabled).Where("game_runs."+column+" = ? AND game_runs.status IN ?", period, []string{"survived", "defeated"}).Group("game_runs.user_id, users.display_name").Order("SUM(game_runs.score) DESC, MAX(game_runs.finished_at) ASC, game_runs.user_id ASC").Limit(100).Scan(&rows).Error
+	err := tx.Table("game_runs").Select("game_runs.user_id, COALESCE(NULLIF(users.display_name, ''), 'Player') AS name, SUM(game_runs.score) AS score, COUNT(*) AS runs").Joins("JOIN users ON users.id = game_runs.user_id AND users.deleted_at IS NULL AND users.status = ?", common.UserStatusEnabled).Where("game_runs."+column+" = ? AND game_runs.status IN ?", period, []string{"survived", "defeated"}).Group("game_runs.user_id, users.display_name").Order("SUM(game_runs.score) DESC, MAX(game_runs.finished_at) ASC, game_runs.user_id ASC").Limit(gameRankingLimit).Scan(&rows).Error
 	for i := range rows {
 		rows[i].Rank = i + 1
 	}
 	return rows, err
 }
+
+// gameOwnRank ranks one player outside the cached top rows with the same
+// ordering gameRanking uses. It returns nil when the player has no ranked run.
+func gameOwnRank(period string, weekly bool, userID int) (*GameRank, error) {
+	column := "day"
+	if weekly {
+		column = "week"
+	}
+	var own []GameRank
+	query := DB.Table("game_runs").Select("game_runs.user_id, COALESCE(NULLIF(users.display_name, ''), 'Player') AS name, SUM(game_runs.score) AS score, COUNT(*) AS runs, MAX(game_runs.finished_at) AS finished_at").Joins("JOIN users ON users.id = game_runs.user_id AND users.deleted_at IS NULL AND users.status = ?", common.UserStatusEnabled).Where("game_runs."+column+" = ? AND game_runs.status IN ? AND game_runs.user_id = ?", period, []string{"survived", "defeated"}, userID).Group("game_runs.user_id, users.display_name")
+	if err := query.Scan(&own).Error; err != nil || len(own) == 0 {
+		return nil, err
+	}
+	var ahead int64
+	better := DB.Table("game_runs").Select("game_runs.user_id").Joins("JOIN users ON users.id = game_runs.user_id AND users.deleted_at IS NULL AND users.status = ?", common.UserStatusEnabled).Where("game_runs."+column+" = ? AND game_runs.status IN ?", period, []string{"survived", "defeated"}).Group("game_runs.user_id").Having("SUM(game_runs.score) > ? OR (SUM(game_runs.score) = ? AND MAX(game_runs.finished_at) < ?) OR (SUM(game_runs.score) = ? AND MAX(game_runs.finished_at) = ? AND game_runs.user_id < ?)", own[0].Score, own[0].Score, own[0].FinishedAt, own[0].Score, own[0].FinishedAt, userID)
+	if err := DB.Table("(?) AS better", better).Count(&ahead).Error; err != nil {
+		return nil, err
+	}
+	own[0].Rank = int(ahead) + 1
+	own[0].IsMe = true
+	return &own[0], nil
+}
+
+// GetGameRanking serves the top rows from a short cache shared by all players.
+// A caller ranked below the visible rows gets their own row appended.
 func GetGameRanking(userID int, weekly bool, now time.Time) ([]GameRank, error) {
 	day, week, _ := GameCalendar(now)
 	period := day
 	if weekly {
 		period = week
 	}
-	rows, err := gameRanking(DB, period, weekly)
+	key := fmt.Sprintf("%t:%s", weekly, period)
+	gameRankingCache.Lock()
+	entry, ok := gameRankingCache.entries[key]
+	gameRankingCache.Unlock()
+	if !ok || entry.db != DB || !time.Now().Before(entry.expires) {
+		rows, err := gameRanking(DB, period, weekly)
+		if err != nil {
+			return rows, err
+		}
+		entry = gameRankingCacheEntry{db: DB, rows: rows, expires: time.Now().Add(gameRankingTTL)}
+		gameRankingCache.Lock()
+		if len(gameRankingCache.entries) >= gameRankingCacheLimit {
+			gameRankingCache.entries = map[string]gameRankingCacheEntry{}
+		}
+		gameRankingCache.entries[key] = entry
+		gameRankingCache.Unlock()
+	}
+	rows := make([]GameRank, len(entry.rows))
+	copy(rows, entry.rows)
+	found := false
 	for i := range rows {
 		rows[i].IsMe = rows[i].UserID == userID
+		found = found || rows[i].IsMe
 	}
-	return rows, err
+	if found || len(rows) < gameRankingLimit {
+		return rows, nil
+	}
+	own, err := gameOwnRank(period, weekly, userID)
+	if err != nil {
+		return rows, err
+	}
+	if own != nil {
+		rows = append(rows, *own)
+	}
+	return rows, nil
 }
 func SettleGameWeek(week string, now time.Time) error {
 	start, err := time.ParseInLocation("2006-01-02", week, gameZone)
@@ -696,25 +892,111 @@ func SettleGameWeek(week string, now time.Time) error {
 	}
 	return err
 }
-func MaintainGames(now time.Time) error {
-	var maintenanceErrors []error
-	var runs []GameRun
-	if err := DB.Where("status = ? AND started_at < ?", "running", now.Add(-time.Duration(tokengame.SprintDuration*tokengame.TickMillis)*time.Millisecond).UnixMilli()).Order("started_at ASC").Limit(200).Find(&runs).Error; err != nil {
-		return err
-	}
-	for _, run := range runs {
+
+// guardGameMaintenance runs one maintenance step and turns a panic into an
+// error, so a single bad row can neither kill the sweep nor the gateway.
+func guardGameMaintenance(step string, fn func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			common.SysError(common.LogText("game maintenance panic in %s: %v\n%s", step, recovered, debug.Stack()))
+			err = fmt.Errorf("panic in %s: %v", step, recovered)
+		}
+	}()
+	return fn()
+}
+
+// abandonBrokenGameRun gives up on a run that has failed repeatedly long after
+// its deadline, so it cannot block weekly settlement forever. No reward is
+// paid and any budget reservation is released.
+func abandonBrokenGameRun(runID string, now time.Time) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var run GameRun
+		if err := lockForUpdate(tx).First(&run, "id = ?", runID).Error; err != nil {
+			return err
+		}
+		if run.Status != "running" {
+			return nil
+		}
+		if run.RewardVersion >= 2 && run.ReservedQuota > 0 {
+			var period GamePeriod
+			if err := lockForUpdate(tx).First(&period, "id = ?", "token:"+run.Day).Error; err == nil {
+				period.Reserved = max(0, period.Reserved-run.ReservedQuota)
+				if err := tx.Save(&period).Error; err != nil {
+					return err
+				}
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+		}
+		run.Status = "abandoned"
+		run.ReservedQuota = 0
+		run.FinishedAt = now.UnixMilli()
+		return tx.Save(&run).Error
+	})
+}
+
+// maintainGameRun finalizes one expired run. Failures are counted per run; one
+// that keeps failing past a full day beyond its latest possible deadline is
+// abandoned instead of being retried forever.
+func maintainGameRun(run GameRun, now time.Time) error {
+	err := guardGameMaintenance("run "+run.ID, func() error {
 		view, err := gameView(&run, now)
 		if err != nil {
-			maintenanceErrors = append(maintenanceErrors, fmt.Errorf("decode game run %s (user %d, week %s): %w", run.ID, run.UserID, run.Week, err))
-			continue
+			return fmt.Errorf("decode game run %s (user %d, week %s): %w", run.ID, run.UserID, run.Week, err)
 		}
 		deadline := run.StartedAt + int64(view.State.ClockLimit()+tokengame.MaxInputBatch)*tokengame.TickMillis
 		if now.UnixMilli() < deadline {
-			continue
+			return nil
 		}
 		if _, err := AdvanceGame(run.UserID, run.ID, -1, nil, false, now); err != nil {
-			maintenanceErrors = append(maintenanceErrors, fmt.Errorf("advance expired game run %s (user %d, week %s): %w", run.ID, run.UserID, run.Week, err))
+			return fmt.Errorf("advance expired game run %s (user %d, week %s): %w", run.ID, run.UserID, run.Week, err)
 		}
+		return nil
+	})
+	gameRunFailures.Lock()
+	defer gameRunFailures.Unlock()
+	if err == nil {
+		delete(gameRunFailures.counts, run.ID)
+		return nil
+	}
+	gameRunFailures.counts[run.ID]++
+	latest := run.StartedAt + int64(tokengame.Duration+3*tokengame.UpgradePauseTicks+tokengame.MaxInputBatch)*tokengame.TickMillis + gameRunAbandonGrace.Milliseconds()
+	if gameRunFailures.counts[run.ID] < gameRunMaxFailures || now.UnixMilli() < latest {
+		return err
+	}
+	if abandonErr := abandonBrokenGameRun(run.ID, now); abandonErr != nil {
+		return errors.Join(err, fmt.Errorf("abandon game run %s: %w", run.ID, abandonErr))
+	}
+	delete(gameRunFailures.counts, run.ID)
+	common.SysError(common.LogText("game run %s abandoned after repeated maintenance failures: %s", run.ID, err.Error()))
+	return nil
+}
+
+func MaintainGames(now time.Time) error {
+	var maintenanceErrors []error
+	cutoff := now.Add(-time.Duration(tokengame.SprintDuration*tokengame.TickMillis) * time.Millisecond).UnixMilli()
+	// Page by (started_at, id) so runs that keep failing cannot occupy the
+	// whole batch and starve the ones behind them.
+	var lastStarted int64
+	lastID := ""
+	for range 50 {
+		var runs []GameRun
+		query := DB.Where("status = ? AND started_at < ?", "running", cutoff)
+		if lastID != "" {
+			query = query.Where("started_at > ? OR (started_at = ? AND id > ?)", lastStarted, lastStarted, lastID)
+		}
+		if err := query.Order("started_at ASC, id ASC").Limit(200).Find(&runs).Error; err != nil {
+			return errors.Join(append(maintenanceErrors, err)...)
+		}
+		for _, run := range runs {
+			if err := maintainGameRun(run, now); err != nil {
+				maintenanceErrors = append(maintenanceErrors, err)
+			}
+		}
+		if len(runs) < 200 {
+			break
+		}
+		lastStarted, lastID = runs[len(runs)-1].StartedAt, runs[len(runs)-1].ID
 	}
 	// Do not settle a week until every outstanding run has been finalized.
 	var periods []GamePeriod
@@ -724,22 +1006,28 @@ func MaintainGames(now time.Time) error {
 	}
 	for _, p := range periods {
 		week := p.ID[5:]
-		var count int64
-		if err := DB.Model(&GameRun{}).Where("week = ? AND status = ?", week, "running").Count(&count).Error; err != nil {
-			maintenanceErrors = append(maintenanceErrors, fmt.Errorf("count running games for week %s: %w", week, err))
-			continue
-		}
-		if count == 0 {
-			if err := SettleGameWeek(week, now); err != nil {
-				maintenanceErrors = append(maintenanceErrors, fmt.Errorf("settle game week %s: %w", week, err))
+		err := guardGameMaintenance("week "+week, func() error {
+			var count int64
+			if err := DB.Model(&GameRun{}).Where("week = ? AND status = ?", week, "running").Count(&count).Error; err != nil {
+				return fmt.Errorf("count running games for week %s: %w", week, err)
 			}
+			if count > 0 {
+				return nil
+			}
+			if err := SettleGameWeek(week, now); err != nil {
+				return fmt.Errorf("settle game week %s: %w", week, err)
+			}
+			return nil
+		})
+		if err != nil {
+			maintenanceErrors = append(maintenanceErrors, err)
 		}
 	}
 	return errors.Join(maintenanceErrors...)
 }
 func RunGameMaintenance() {
 	for {
-		if err := MaintainGames(time.Now()); err != nil {
+		if err := guardGameMaintenance("sweep", func() error { return MaintainGames(time.Now()) }); err != nil {
 			common.SysError(common.LogText("game maintenance failed: %s", err.Error()))
 		}
 		time.Sleep(time.Minute)

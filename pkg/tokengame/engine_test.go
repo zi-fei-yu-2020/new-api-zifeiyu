@@ -2,9 +2,11 @@ package tokengame
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -206,6 +208,7 @@ func TestCombatReplayCompatibility(t *testing.T) {
 	require.GreaterOrEqual(t, len(fixtures), 3)
 	for _, fixture := range fixtures {
 		s := New(fixture.Seed)
+		s.Version = fixture.State.Version
 		for _, input := range fixture.Inputs {
 			s.Step(input)
 		}
@@ -227,4 +230,105 @@ func TestCombatMultishotDropsOneTokenPerDefeatedEnemy(t *testing.T) {
 	require.Empty(t, s.Enemies)
 	s.Step(0)
 	require.Equal(t, 2, s.PickedTokens, "a defeated enemy cannot pay out twice")
+}
+
+func TestRandomVersionsKeepLegacyStreamAndFixLowBitBias(t *testing.T) {
+	legacy, current := New(42), New(42)
+	legacy.Version = 3
+	// Version 3 and older keep the plain modulo so stored runs replay unchanged.
+	rng := uint32(42)
+	for range 8 {
+		rng = rng*1664525 + 1013904223
+		assert.Equal(t, int(rng%4), legacy.random(4))
+	}
+	// The low bits of the legacy stream cycle with period four; version 4 does not.
+	var legacyEdges, edges []int
+	for range 64 {
+		legacyEdges = append(legacyEdges, legacy.random(4))
+		edges = append(edges, current.random(4))
+	}
+	assert.Equal(t, legacyEdges[:4], legacyEdges[4:8])
+	assert.NotEqual(t, edges[:4], edges[4:8])
+	counts := [10]int{}
+	for range 10000 {
+		draw := current.random(10)
+		require.GreaterOrEqual(t, draw, 0)
+		require.Less(t, draw, 10)
+		counts[draw]++
+	}
+	for value, count := range counts {
+		assert.InDelta(t, 1000, count, 150, "draw %d must be roughly uniform", value)
+	}
+}
+
+func TestRandomReplayCompatibility(t *testing.T) {
+	raw, err := os.ReadFile("testdata/random-v4-replays.json")
+	require.NoError(t, err)
+	var fixtures []struct {
+		Seed   uint32
+		Inputs []int
+		State  State
+	}
+	require.NoError(t, common.Unmarshal(raw, &fixtures))
+	require.GreaterOrEqual(t, len(fixtures), 3)
+	for _, fixture := range fixtures {
+		require.Equal(t, Version, fixture.State.Version)
+		s := New(fixture.Seed)
+		for _, input := range fixture.Inputs {
+			s.Step(input)
+		}
+		require.Equal(t, fixture.State, s)
+	}
+}
+
+// Regenerate the version 4 fixtures: WRITE_SOLO_FIXTURES=1 go test ./pkg/tokengame -run TestSoloWriteFixtures
+// The input scripts come from the committed version 3 combat fixtures; each is
+// replayed under the current rules and truncated where the run ends.
+func TestSoloWriteFixtures(t *testing.T) {
+	if os.Getenv("WRITE_SOLO_FIXTURES") == "" {
+		t.Skip("set WRITE_SOLO_FIXTURES=1 to regenerate random-v4-replays.json")
+	}
+	raw, err := os.ReadFile("testdata/combat-replays.json")
+	require.NoError(t, err)
+	var sources []struct {
+		Seed   uint32 `json:"seed"`
+		Inputs []int  `json:"inputs"`
+	}
+	require.NoError(t, common.Unmarshal(raw, &sources))
+	type fixture struct {
+		Seed   uint32 `json:"seed"`
+		Inputs []int  `json:"inputs"`
+		State  State  `json:"state"`
+	}
+	var fixtures []fixture
+	for _, source := range sources {
+		s := New(source.Seed)
+		var used []int
+		for _, input := range source.Inputs {
+			if s.Done() {
+				break
+			}
+			used = append(used, input)
+			s.Step(input)
+		}
+		require.Positive(t, s.Kills)
+		s.Enemies = slices.Clone(s.Enemies)
+		s.Tokens = slices.Clone(s.Tokens)
+		fixtures = append(fixtures, fixture{Seed: source.Seed, Inputs: used, State: s})
+	}
+	encoded, err := common.Marshal(fixtures)
+	require.NoError(t, err)
+	// The web engine always carries pause_ticks while Go omits a zero value;
+	// spell it out so the committed fixture compares equal on both sides.
+	var generic []map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &generic))
+	for _, entry := range generic {
+		state := entry["state"].(map[string]any)
+		if _, ok := state["pause_ticks"]; !ok {
+			state["pause_ticks"] = 0
+		}
+	}
+	encoded, err = common.Marshal(generic)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile("testdata/random-v4-replays.json", encoded, 0o644))
 }

@@ -11,9 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// pvpSmallBodyLimit caps the JSON bodies of the tiny stake/code requests.
+const pvpSmallBodyLimit = 1024
+
 func GetPvPStatus(c *gin.Context) {
 	status, err := model.GetPvPStatus(c.GetInt("id"), time.Now())
 	if err != nil {
+		common.SysError(common.LogText("pvp: failed to load status for user %d: %s", c.GetInt("id"), err.Error()))
 		common.ApiErrorT(c, "Unable to load PvP status")
 		return
 	}
@@ -21,6 +25,7 @@ func GetPvPStatus(c *gin.Context) {
 }
 
 func JoinPvPQueue(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, pvpSmallBodyLimit)
 	var body struct {
 		Stake int `json:"stake"`
 	}
@@ -76,6 +81,7 @@ func SubmitPvPInput(c *gin.Context) {
 }
 
 func CreatePvPFriendly(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, pvpSmallBodyLimit)
 	var body struct {
 		Stake int `json:"stake"`
 	}
@@ -93,6 +99,7 @@ func CreatePvPFriendly(c *gin.Context) {
 }
 
 func JoinPvPFriendly(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, pvpSmallBodyLimit)
 	var body struct {
 		Code string `json:"code" binding:"required,max=16"`
 	}
@@ -106,6 +113,15 @@ func JoinPvPFriendly(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"match": view})
+}
+
+// CancelPvPFriendly withdraws the caller's open invite and refunds the escrow.
+func CancelPvPFriendly(c *gin.Context) {
+	if err := model.CancelPvPFriendly(c.GetInt("id"), time.Now()); err != nil {
+		respondPvPError(c, err, "Unable to cancel the friendly duel")
+		return
+	}
+	common.ApiSuccess(c, gin.H{"cancelled": true})
 }
 
 func ListPvPMatches(c *gin.Context) {
@@ -122,6 +138,7 @@ func ListPvPMatches(c *gin.Context) {
 	}
 	items, total, err := model.ListPvPMatches(c.GetInt("id"), page, pageSize)
 	if err != nil {
+		common.SysError(common.LogText("pvp: failed to list matches for user %d: %s", c.GetInt("id"), err.Error()))
 		common.ApiErrorT(c, "Unable to load PvP matches")
 		return
 	}
@@ -158,6 +175,9 @@ func respondPvPError(c *gin.Context, err error, fallback string) {
 	case errors.Is(err, model.ErrPvPReplayNotReady):
 		common.ApiErrorT(c, "PvP replay is only available after the duel finishes")
 	default:
+		// Anything else is an unexpected failure on a money path; keep the
+		// client message generic but leave an operator-visible trace.
+		common.SysError(common.LogText("pvp: %s %s failed for user %d: %s", c.Request.Method, c.FullPath(), c.GetInt("id"), err.Error()))
 		common.ApiErrorT(c, fallback)
 	}
 }

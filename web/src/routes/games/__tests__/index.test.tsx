@@ -183,6 +183,49 @@ it('keeps a running game reachable when the workbench is off', async () => {
   await expect(loadGames()).resolves.toBeUndefined()
 })
 
+it.each(['playing', 'invited'])(
+  'keeps the page reachable for a %s PvP duel when the workbench is off',
+  async (status) => {
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (String(url).includes('/pvp/status')) {
+        return {
+          data: {
+            success: true,
+            data: { enabled: true, queue: null, match: { id: 'm', status } },
+          },
+        }
+      }
+      return {
+        data: { success: true, data: { ...runningStatus(), run: null } },
+      }
+    })
+
+    await expect(loadGames()).resolves.toBeUndefined()
+  }
+)
+
+it('still redirects when the PvP status holds only a finished duel', async () => {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (String(url).includes('/pvp/status')) {
+      return {
+        data: {
+          success: true,
+          data: {
+            enabled: true,
+            queue: null,
+            match: { id: 'm', status: 'finished' },
+          },
+        },
+      }
+    }
+    return { data: { success: true, data: { ...runningStatus(), run: null } } }
+  })
+
+  await expect(loadGames()).rejects.toMatchObject({
+    options: { to: '/dashboard' },
+  })
+})
+
 it('skips the status fetch when the workbench is enabled', async () => {
   vi.mocked(isWorkbenchEnabledForGuard).mockResolvedValue(true)
   const get = vi.spyOn(api, 'get')

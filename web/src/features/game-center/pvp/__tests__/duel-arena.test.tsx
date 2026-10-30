@@ -91,3 +91,43 @@ it('captures movement and dash keys when the arena itself has focus', () => {
   expect(dash.defaultPrevented).toBe(true)
   expect(input.current.dash).toBe(true)
 })
+
+function press(target: Window | Element, init: KeyboardEventInit) {
+  const event = new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  })
+  fireEvent(target, event)
+  return event
+}
+
+it('releases held movement keys when the window loses focus or the tab hides', () => {
+  const input = renderArena()
+  press(window, { key: 'd' })
+  expect(input.current.direction).toBe(3)
+  fireEvent.blur(window)
+  expect(input.current.direction).toBe(0)
+
+  press(window, { key: 'd' })
+  expect(input.current.direction).toBe(3)
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+  fireEvent(document, new Event('visibilitychange'))
+  expect(input.current.direction).toBe(0)
+})
+
+it('ignores browser shortcut combos and drops keys held under them', () => {
+  const input = renderArena()
+  press(window, { key: 'd' })
+  expect(input.current.direction).toBe(3)
+
+  // On macOS the keyup of a key pressed under Cmd never arrives.
+  const shortcut = press(window, { key: '1', metaKey: true })
+  expect(shortcut.defaultPrevented).toBe(false)
+  expect(input.current.upgrade).toBe(0)
+  expect(input.current.direction).toBe(0)
+
+  const alt = press(window, { key: 'ArrowLeft', altKey: true })
+  expect(alt.defaultPrevented).toBe(false)
+  expect(input.current.direction).toBe(0)
+})
