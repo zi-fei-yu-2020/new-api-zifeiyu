@@ -51,6 +51,53 @@ func setupModelListControllerTestDB(t *testing.T) *gorm.DB {
 
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
 
+	return db
+}
+
+// setupModelListAbilityDB adds the channels the ability-backed model listings
+// need. Other suites share setupModelListControllerTestDB and create their own
+// channel rows, so these fixtures stay out of the shared setup.
+func setupModelListAbilityDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db := setupModelListControllerTestDB(t)
+	// GetGroupEnabledModels only exposes an ability whose channel is enabled and
+	// still lists the model, so the referenced channels must exist and declare
+	// every fixture model.
+	// GetGroupEnabledModels only exposes an ability whose channel is enabled and
+	// still lists the model, so the referenced channels must exist and declare
+	// every fixture model.
+	fixtureModels := strings.Join([]string{
+		"zz-default-model",
+		"zz-default-only-model",
+		"zz-default-outside-snapshot",
+		"zz-disabled-model",
+		"zz-shared-model",
+		"zz-tiered-empty-expr-model",
+		"zz-tiered-missing-expr-model",
+		"zz-tiered-visible-model",
+		"zz-token-tiered-empty-expr-model",
+		"zz-token-tiered-missing-expr-model",
+		"zz-token-tiered-visible-model",
+		"zz-token-unpriced-model",
+		"zz-unavailable-model",
+		"zz-unpriced-model",
+		"zz-vip-allowed",
+		"zz-vip-denied",
+		"zz-vip-model",
+	}, ",")
+	for _, id := range []int{1, 2} {
+		require.NoError(t, db.Create(&model.Channel{
+			Id:     id,
+			Type:   constant.ChannelTypeOpenAI,
+			Key:    "model-list-key",
+			Status: common.ChannelStatusEnabled,
+			Name:   fmt.Sprintf("model-list-channel-%d", id),
+			Group:  "default",
+			Models: fixtureModels,
+		}).Error)
+	}
+
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
 		if err == nil {
@@ -182,7 +229,7 @@ func decodeUserModelsResponse(t *testing.T, recorder *httptest.ResponseRecorder)
 }
 
 func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
-	db := setupModelListControllerTestDB(t)
+	db := setupModelListAbilityDB(t)
 	require.NoError(t, db.Create(&model.User{
 		Id:       1002,
 		Username: "playground-model-user",
@@ -236,7 +283,7 @@ func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 		"-:unavailable": "",
 	})
 
-	db := setupModelListControllerTestDB(t)
+	db := setupModelListAbilityDB(t)
 	require.NoError(t, db.Create(&model.User{
 		Id:       1003,
 		Username: "playground-auto-model-user",
@@ -276,7 +323,7 @@ func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 		"zz-tiered-empty-expr-model": "   ",
 	})
 
-	db := setupModelListControllerTestDB(t)
+	db := setupModelListAbilityDB(t)
 	require.NoError(t, db.Create(&model.User{
 		Id:       1001,
 		Username: "model-list-user",
@@ -323,7 +370,7 @@ func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 
 func TestListModelsUsesAdvancedCustomEndpointTypesFromPricingCache(t *testing.T) {
 	withSelfUseModeEnabled(t)
-	db := setupModelListControllerTestDB(t)
+	db := setupModelListAbilityDB(t)
 
 	originalMemoryCacheEnabled := common.MemoryCacheEnabled
 	common.MemoryCacheEnabled = true
@@ -402,7 +449,7 @@ func TestListModelsTokenLimitIncludesTieredBillingModel(t *testing.T) {
 		"zz-token-tiered-visible-model":    `tier("base", p * 1 + c * 2)`,
 		"zz-token-tiered-empty-expr-model": "",
 	})
-	db := setupModelListControllerTestDB(t)
+	db := setupModelListAbilityDB(t)
 	require.NoError(t, db.Create(&[]model.Ability{
 		{Group: "default", Model: "zz-token-tiered-visible-model", ChannelId: 1, Enabled: true},
 		{Group: "default", Model: "zz-token-tiered-empty-expr-model", ChannelId: 1, Enabled: true},
@@ -445,7 +492,7 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
 	})
 
-	db := setupModelListControllerTestDB(t)
+	db := setupModelListAbilityDB(t)
 	require.NoError(t, db.Create(&[]model.Ability{
 		{Group: "vip", Model: "zz-vip-allowed", ChannelId: 1, Enabled: true},
 		{Group: "vip", Model: "zz-vip-denied", ChannelId: 1, Enabled: true},
@@ -494,7 +541,7 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 }
 
 func TestSetupLoginDoesNotTouchPasswordWhenPasswordFieldOmitted(t *testing.T) {
-	db := setupModelListControllerTestDB(t)
+	db := setupModelListAbilityDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.AuditLog{}, &model.UserSession{}, &model.TwoFA{}, &model.PasskeyCredential{}))
 
 	hashedPassword, err := common.Password2Hash("CurrentPassword123")
