@@ -112,6 +112,11 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/user/game/settings": accessTokenSessionRule,
 	"POST /pg/translation-studio": accessTokenSessionRule,
 	"PUT /api/user/game/settings": accessTokenSessionRule,
+	// Tile game runs are scored server-side and rewarded weekly, so they are session-only.
+	"GET /api/user/game/match3":          accessTokenSessionRule,
+	"POST /api/user/game/match3/start":   accessTokenSessionRule,
+	"POST /api/user/game/match3/input":   accessTokenSessionRule,
+	"GET /api/user/game/match3/rankings": accessTokenSessionRule,
 	// 1v1 duels move wallet quota, so they stay session-only as well.
 	"GET /api/user/game/pvp/status":                accessTokenSessionRule,
 	"POST /api/user/game/pvp/queue":                accessTokenSessionRule,

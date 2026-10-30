@@ -157,6 +157,12 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/game/settings", middleware.RootAuth(), middleware.DisableCache(), controller.GetGameSettings)
 				selfRoute.PUT("/game/settings", middleware.RootAuth(), controller.UpdateGameSettings)
 
+				// Tile game runs are replayed server-side from client inputs.
+				selfRoute.GET("/game/match3", middleware.DisableCache(), controller.GetMatchStatus)
+				selfRoute.POST("/game/match3/start", middleware.UserCriticalRateLimit("match3-start"), controller.StartMatch)
+				selfRoute.POST("/game/match3/input", middleware.UserRateLimit("match3-input", 120, 60), controller.AdvanceMatch)
+				selfRoute.GET("/game/match3/rankings", middleware.DisableCache(), controller.GetMatchRankings)
+
 				// 1v1 PvP duels share the authenticated user boundary of the daily game.
 				selfRoute.GET("/game/pvp/status", middleware.DisableCache(), controller.GetPvPStatus)
 				selfRoute.POST("/game/pvp/queue", middleware.UserCriticalRateLimit("pvp-queue"), controller.JoinPvPQueue)

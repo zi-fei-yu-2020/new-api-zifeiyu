@@ -226,6 +226,64 @@ it('still redirects when the PvP status holds only a finished duel', async () =>
   })
 })
 
+function mockMatch3Status(match3: () => unknown) {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (String(url).includes('/match3')) {
+      return { data: { success: true, data: match3() } }
+    }
+    if (String(url).includes('/pvp/status')) {
+      return {
+        data: {
+          success: true,
+          data: { enabled: true, queue: null, match: null },
+        },
+      }
+    }
+    return { data: { success: true, data: { ...runningStatus(), run: null } } }
+  })
+}
+
+it.each(['daily_run', 'endless_run'])(
+  'keeps the page reachable for a running tile %s when the workbench is off',
+  async (key) => {
+    mockMatch3Status(() => ({
+      daily_run: null,
+      endless_run: null,
+      [key]: { id: 'tile-run', status: 'running' },
+    }))
+
+    await expect(loadGames()).resolves.toBeUndefined()
+  }
+)
+
+it('redirects when the tile status holds only a finished run', async () => {
+  mockMatch3Status(() => ({
+    daily_run: { id: 'tile-run', status: 'completed' },
+    endless_run: null,
+  }))
+
+  await expect(loadGames()).rejects.toMatchObject({
+    options: { to: '/dashboard' },
+  })
+})
+
+it('keeps the page reachable when the tile status fetch fails', async () => {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (String(url).includes('/match3')) throw new Error('Tile offline')
+    if (String(url).includes('/pvp/status')) {
+      return {
+        data: {
+          success: true,
+          data: { enabled: true, queue: null, match: null },
+        },
+      }
+    }
+    return { data: { success: true, data: { ...runningStatus(), run: null } } }
+  })
+
+  await expect(loadGames()).resolves.toBeUndefined()
+})
+
 it('skips the status fetch when the workbench is enabled', async () => {
   vi.mocked(isWorkbenchEnabledForGuard).mockResolvedValue(true)
   const get = vi.spyOn(api, 'get')

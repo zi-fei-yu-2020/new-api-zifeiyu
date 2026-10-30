@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -135,6 +136,13 @@ type GameSettings struct {
 	PvpEnabled           bool `json:"pvp_enabled"`
 	PvpMinStake          int  `json:"pvp_min_stake"`
 	PvpMaxStake          int  `json:"pvp_max_stake"`
+	// The tile game has its own switches and fixed top-three weekly prizes. Only
+	// the ranked endless board pays; the daily board never does.
+	Match3Enabled        bool `json:"match3_enabled"`
+	Match3RewardsEnabled bool `json:"match3_rewards_enabled"`
+	Match3WeeklyFirst    int  `json:"match3_weekly_first_quota"`
+	Match3WeeklySecond   int  `json:"match3_weekly_second_quota"`
+	Match3WeeklyThird    int  `json:"match3_weekly_third_quota"`
 }
 
 // PvpStakeBounds returns the effective PvP stake window, substituting the
@@ -198,7 +206,7 @@ func (period GamePeriod) weeklyPrizes() []int {
 }
 
 func defaultGameSettings() GameSettings {
-	return GameSettings{Enabled: true, RewardVersion: 2, WeeklyRewardVersion: 1, FirstTokenQuota: common.QuotaRound(5 * common.QuotaPerUnit), SubsequentTokenQuota: common.QuotaRound(common.QuotaPerUnit / 2), DailyBudget: 0, WeeklyBudget: 50000, PvpEnabled: true, PvpMinStake: common.QuotaRound(common.QuotaPerUnit / 10), PvpMaxStake: common.QuotaRound(100 * common.QuotaPerUnit)}
+	return GameSettings{Enabled: true, RewardVersion: 2, WeeklyRewardVersion: 1, FirstTokenQuota: common.QuotaRound(5 * common.QuotaPerUnit), SubsequentTokenQuota: common.QuotaRound(common.QuotaPerUnit / 2), DailyBudget: 0, WeeklyBudget: 50000, PvpEnabled: true, Match3Enabled: true, PvpMinStake: common.QuotaRound(common.QuotaPerUnit / 10), PvpMaxStake: common.QuotaRound(100 * common.QuotaPerUnit)}
 }
 
 // loadGameSettings reads the stored settings, bypassing the cache. Stored
@@ -346,6 +354,10 @@ func validateGameSettingsBounds(settings GameSettings) error {
 	if settings.FirstTokenQuota < 0 || settings.SubsequentTokenQuota < 0 || settings.FirstTokenQuota > 1000000000 || settings.SubsequentTokenQuota > 1000000000 || int64(settings.FirstTokenQuota)+int64(tokengame.MaxTokens-1)*int64(settings.SubsequentTokenQuota) > 1000000000 {
 		return ErrGameSettings
 	}
+	match3Prizes := []int{settings.Match3WeeklyFirst, settings.Match3WeeklySecond, settings.Match3WeeklyThird}
+	if slices.Min(match3Prizes) < 0 || slices.Max(match3Prizes) > 1000000000 || int64(match3Prizes[0])+int64(match3Prizes[1])+int64(match3Prizes[2]) > 1000000000 {
+		return ErrGameSettings
+	}
 	// PvP stakes use the effective bounds so unset values validate as defaults.
 	minStake, maxStake := settings.PvpStakeBounds()
 	if minStake < 0 || maxStake < 0 || minStake > maxStake || settings.PvpMinStake > common.MaxWalletQuota || settings.PvpMaxStake > common.MaxWalletQuota {
@@ -373,10 +385,28 @@ func saveGameSettingsAt(settings GameSettings, now time.Time) error {
 		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoUpdates: clause.AssignmentColumns([]string{"value"})}).Create(&option).Error; err != nil {
 			return err
 		}
+		_, week, _ := GameCalendar(now)
+		// Switching tile game rewards on creates the week's prize snapshot, and a
+		// week nobody has been paid for yet takes the new prizes. A paid or settled
+		// one is skipped silently so it never blocks token game saves.
+		if settings.Match3RewardsEnabled {
+			matchPeriod := GamePeriod{ID: "match3:" + week, WeeklyRewardVersion: 2}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&matchPeriod).Error; err != nil {
+				return err
+			}
+			if err := lockForUpdate(tx).First(&matchPeriod, "id = ?", matchPeriod.ID).Error; err != nil {
+				return err
+			}
+			if !matchPeriod.Settled && matchPeriod.Spent == 0 {
+				matchPeriod = settings.match3Period(week)
+				if err := tx.Save(&matchPeriod).Error; err != nil {
+					return err
+				}
+			}
+		}
 		if settings.WeeklyRewardVersion < 2 {
 			return nil
 		}
-		_, week, _ := GameCalendar(now)
 		period := GamePeriod{ID: "week:" + week, WeeklyRewardVersion: 2}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&period).Error; err != nil {
 			return err
@@ -759,6 +789,8 @@ type GameRank struct {
 	Runs   int    `json:"runs"`
 	Rank   int    `json:"rank"`
 	IsMe   bool   `gorm:"-" json:"is_me"`
+	// Level is only filled by the tile game boards.
+	Level int `gorm:"->" json:"level,omitempty"`
 	// FinishedAt is the latest finish time, used only to rank one player.
 	FinishedAt int64 `gorm:"->" json:"-"`
 }
@@ -798,22 +830,16 @@ func gameOwnRank(period string, weekly bool, userID int) (*GameRank, error) {
 	return &own[0], nil
 }
 
-// GetGameRanking serves the top rows from a short cache shared by all players.
-// A caller ranked below the visible rows gets their own row appended.
-func GetGameRanking(userID int, weekly bool, now time.Time) ([]GameRank, error) {
-	day, week, _ := GameCalendar(now)
-	period := day
-	if weekly {
-		period = week
-	}
-	key := fmt.Sprintf("%t:%s", weekly, period)
+// cachedGameRanking serves ranking rows from the short cache shared by all
+// players, loading them on a miss, and marks the caller's row.
+func cachedGameRanking(key string, userID int, load func() ([]GameRank, error)) ([]GameRank, bool, error) {
 	gameRankingCache.Lock()
 	entry, ok := gameRankingCache.entries[key]
 	gameRankingCache.Unlock()
 	if !ok || entry.db != DB || !time.Now().Before(entry.expires) {
-		rows, err := gameRanking(DB, period, weekly)
+		rows, err := load()
 		if err != nil {
-			return rows, err
+			return rows, false, err
 		}
 		entry = gameRankingCacheEntry{db: DB, rows: rows, expires: time.Now().Add(gameRankingTTL)}
 		gameRankingCache.Lock()
@@ -829,6 +855,21 @@ func GetGameRanking(userID int, weekly bool, now time.Time) ([]GameRank, error) 
 	for i := range rows {
 		rows[i].IsMe = rows[i].UserID == userID
 		found = found || rows[i].IsMe
+	}
+	return rows, found, nil
+}
+
+// GetGameRanking serves the top rows from a short cache shared by all players.
+// A caller ranked below the visible rows gets their own row appended.
+func GetGameRanking(userID int, weekly bool, now time.Time) ([]GameRank, error) {
+	day, week, _ := GameCalendar(now)
+	period := day
+	if weekly {
+		period = week
+	}
+	rows, found, err := cachedGameRanking(fmt.Sprintf("%t:%s", weekly, period), userID, func() ([]GameRank, error) { return gameRanking(DB, period, weekly) })
+	if err != nil {
+		return rows, err
 	}
 	if found || len(rows) < gameRankingLimit {
 		return rows, nil
@@ -1027,7 +1068,10 @@ func MaintainGames(now time.Time) error {
 }
 func RunGameMaintenance() {
 	for {
-		if err := guardGameMaintenance("sweep", func() error { return MaintainGames(time.Now()) }); err != nil {
+		if err := errors.Join(
+			guardGameMaintenance("sweep", func() error { return MaintainGames(time.Now()) }),
+			guardGameMaintenance("match3", func() error { return MaintainMatch(time.Now()) }),
+		); err != nil {
 			common.SysError(common.LogText("game maintenance failed: %s", err.Error()))
 		}
 		time.Sleep(time.Minute)

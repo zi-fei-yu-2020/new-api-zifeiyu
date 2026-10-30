@@ -453,7 +453,7 @@ export function DailyChallenge(props: { visible?: boolean }) {
                 </div>
               </div>
             )}
-            {canUpgrade && (
+            {canUpgrade && visible && (
               <UpgradePanel
                 state={display}
                 onChoose={(choice) => {
