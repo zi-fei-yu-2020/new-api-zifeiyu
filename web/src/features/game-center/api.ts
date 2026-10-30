@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type { GameState } from './engine'
 
@@ -36,6 +37,11 @@ export type GameSettings = {
   pvp_enabled?: boolean
   pvp_min_stake?: number
   pvp_max_stake?: number
+  match3_enabled?: boolean
+  match3_rewards_enabled?: boolean
+  match3_weekly_first_quota?: number
+  match3_weekly_second_quota?: number
+  match3_weekly_third_quota?: number
 }
 export type GameRun = {
   id: string
@@ -89,13 +95,12 @@ export type Rank = {
   runs: number
   rank: number
   is_me: boolean
+  level?: number
 }
 type Envelope<T> = { success: boolean; data: T; message?: string }
 const path = '/api/user/game'
 function unwrap<T>(response: Envelope<T>): T {
-  if (!response.success) {
-    throw new Error(response.message || 'Unable to load the daily challenge')
-  }
+  requireServerSuccess(response)
   return response.data
 }
 export const getGameStatus = (signal?: AbortSignal) =>

@@ -77,8 +77,8 @@ it('saves only game configuration and retains reward amounts when toggling the g
   expect(
     screen.queryByRole('switch', { name: 'Translation Studio' })
   ).not.toBeInTheDocument()
-  expect(screen.getAllByRole('switch')).toHaveLength(3)
-  expect(screen.getAllByRole('spinbutton')).toHaveLength(8)
+  expect(screen.getAllByRole('switch')).toHaveLength(5)
+  expect(screen.getAllByRole('spinbutton')).toHaveLength(11)
   await userEvent.click(enabled)
   await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
   await waitFor(() => expect(api.put).toHaveBeenCalledOnce())
@@ -90,6 +90,11 @@ it('saves only game configuration and retains reward amounts when toggling the g
     weekly_third_quota: 7500,
     weekly_budget: 32500,
     enabled: false,
+    match3_enabled: true,
+    match3_rewards_enabled: false,
+    match3_weekly_first_quota: 0,
+    match3_weekly_second_quota: 0,
+    match3_weekly_third_quota: 0,
   })
 })
 it('saves the PvP duel switch and stake bounds', async () => {
@@ -119,6 +124,43 @@ it('saves the PvP duel switch and stake bounds', async () => {
     })
   )
 })
+it('saves the Tile Match switches and podium amounts and refreshes its queries', async () => {
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  render(<Workspace />)
+  const enabled = await screen.findByRole('switch', {
+    name: 'Enable Tile Match',
+  })
+  const rewards = screen.getByRole('switch', {
+    name: 'Enable Tile Match weekly rewards',
+  })
+  for (const [label, amount] of [
+    ['Tile Match first-place reward', '9'],
+    ['Tile Match second-place reward', '6'],
+    ['Tile Match third-place reward', '3'],
+  ]) {
+    const input = screen.getByRole('spinbutton', { name: new RegExp(label) })
+    await userEvent.clear(input)
+    await userEvent.type(input, amount)
+  }
+  await userEvent.click(enabled)
+  await userEvent.click(rewards)
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(api.put).toHaveBeenCalledOnce())
+  expect(api.put).toHaveBeenCalledWith(
+    '/api/user/game/settings',
+    expect.objectContaining({
+      match3_enabled: false,
+      match3_rewards_enabled: true,
+      match3_weekly_first_quota: 4500000,
+      match3_weekly_second_quota: 3000000,
+      match3_weekly_third_quota: 1500000,
+    })
+  )
+  await waitFor(() => {
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['match3-status'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['match3-rankings'] })
+  })
+})
 it('rejects a maximum duel stake below the minimum instead of saving it', async () => {
   render(<Workspace />)
   const max = await screen.findByRole('spinbutton', {
@@ -131,6 +173,26 @@ it('rejects a maximum duel stake below the minimum instead of saving it', async 
     'Invalid game reward settings'
   )
   expect(api.put).not.toHaveBeenCalled()
+})
+it('rejects a capped daily budget below one run maximum reward and accepts zero', async () => {
+  render(<Workspace />)
+  const budget = await screen.findByRole('spinbutton', {
+    name: /Total daily reward budget/,
+  })
+  await userEvent.clear(budget)
+  await userEvent.type(budget, '1')
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  expect(
+    await screen.findByText(
+      'A capped daily budget must cover at least the maximum reward for one run'
+    )
+  ).toBeVisible()
+  expect(api.put).not.toHaveBeenCalled()
+
+  await userEvent.clear(budget)
+  await userEvent.type(budget, '0')
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
 })
 it('does not turn an empty reward amount into an unintended zero-value reward', async () => {
   render(<Workspace />)

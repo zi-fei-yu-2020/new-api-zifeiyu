@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -27,11 +29,37 @@ var (
 	ErrPvPInput          = errors.New("PvP input rejected")
 	ErrPvPNotFound       = errors.New("PvP match not found")
 	ErrPvPInvite         = errors.New("PvP invite is no longer available")
+	ErrPvPInviteExpired  = errors.New("PvP invite code has expired")
 	ErrPvPReplayNotReady = errors.New("PvP replay is only available after the duel finishes")
 )
 
 const pvpQueueWaitLimit = 10 * time.Minute
 const pvpInviteTimeout = 10 * time.Minute
+
+// pvpFinishedViewWindow bounds how long a settled duel is still returned as
+// the caller's current match by the status and match endpoints.
+const pvpFinishedViewWindow = 10 * time.Minute
+
+// pvpStartCountdown delays the simulation clock after a match is bound, so the
+// player who was waiting (and only learns of the match by polling) is not forced
+// to open with neutral ticks. match.StartedAt is the wall time of tick 0 and
+// therefore lies this far in the future when the match is created.
+const pvpStartCountdown = 4 * time.Second
+
+// pvpLateGraceTicks (2s of 100ms ticks) is how late an input may arrive and
+// still count. The persisted simulation only advances to allowed-grace, so a
+// duel is never decided on a tick whose inputs a well-behaved client could
+// still deliver, and ticks already simulated are immutable (late input for them
+// is stored as neutral, exactly what the simulation used).
+const pvpLateGraceTicks = 20
+
+// pvpAbandonAfter is how long a player may be silent before the maintenance
+// sweep treats them as having left the duel.
+const pvpAbandonAfter = 60 * time.Second
+
+// pvpDeletedAccountName is the placeholder shown for a removed opponent. It is
+// delivered as data, so the frontend translates this exact English string.
+const pvpDeletedAccountName = "Deleted account"
 
 // PvPMatch is one 1v1 duel. Escrowed stakes, the authoritative state and the
 // per-player sequencing/signing secrets live here; inputs live in PvPInput so
@@ -110,13 +138,15 @@ type PvPLedger struct {
 // has committed, mirroring the daily-game reward flow.
 type pvpLogEvent struct {
 	userID int
-	kind   string // payout | refund | forfeit
+	kind   string // stake | payout | refund | forfeit
 	amount int
 }
 
 func applyPvPEvents(events []pvpLogEvent) {
 	for _, event := range events {
 		switch event.kind {
+		case "stake":
+			RecordLog(event.userID, LogTypeSystem, common.NewMessage("PvP stake locked: {{quota}}", map[string]any{"quota": logger.FormatQuota(event.amount)}))
 		case "payout":
 			syncCreditUserQuotaCache(event.userID, event.amount, "pvp duel")
 			RecordLog(event.userID, LogTypeSystem, common.NewMessage("PvP duel payout: {{quota}}", map[string]any{"quota": logger.FormatQuota(event.amount)}))
@@ -145,7 +175,7 @@ func pvpSeed() int {
 }
 
 func pvpInviteCode() string {
-	buf := make([]byte, 4)
+	buf := make([]byte, 8)
 	_, _ = rand.Read(buf)
 	return hex.EncodeToString(buf)
 }
@@ -292,7 +322,7 @@ func pvpStartMatch(tx *gorm.DB, mode string, stake, player1, player2 int, now ti
 		ID: common.GetUUID(), Mode: mode, Status: "playing", Seed: seed, Stake: stake,
 		Player1ID: player1, Player2ID: player2,
 		Secret1: pvpSecret(), Secret2: pvpSecret(),
-		StateJSON: string(encoded), CreatedAt: now.UnixMilli(), StartedAt: now.UnixMilli(),
+		StateJSON: string(encoded), CreatedAt: now.UnixMilli(), StartedAt: now.Add(pvpStartCountdown).UnixMilli(),
 	}
 	if err := tx.Create(&match).Error; err != nil {
 		return nil, err
@@ -334,7 +364,10 @@ func JoinPvPQueue(userID, stake int, now time.Time) (*PvPMatchView, bool, error)
 		if err == nil {
 			waitSeconds := int((now.UnixMilli() - entry.EnqueuedAt) / 1000)
 			if pvpTolerated(entry.Balance, user.Quota-stake, waitSeconds) {
-				claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ?", entry.ID, "waiting").Update("status", "matched")
+				// The ticket row is reused per account, so the claim must also match
+				// the stake and stint seen above; both escrows then equal the pot of
+				// the match started below.
+				claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ? AND stake = ? AND enqueued_at = ?", entry.ID, "waiting", stake, entry.EnqueuedAt).Update("status", "matched")
 				if claim.Error != nil {
 					return claim.Error
 				}
@@ -385,6 +418,7 @@ func JoinPvPQueue(userID, stake int, now time.Time) (*PvPMatchView, bool, error)
 		if err := cacheDecrUserQuota(userID, int64(stake)); err != nil {
 			common.SysLog(common.LogText("failed to sync pvp stake debit to user quota cache: %s", err.Error()))
 		}
+		applyPvPEvents([]pvpLogEvent{{userID: userID, kind: "stake", amount: stake}})
 	}
 	return view, queued, nil
 }
@@ -455,7 +489,9 @@ func matchPvPQueue(now time.Time) error {
 			}
 			created, err := pairPvPQueueEntries(&entries[i], &entries[j], now)
 			if err != nil {
-				return err
+				// One failing pair must not starve the rest of the queue.
+				common.SysError(common.LogText("pvp pairing failed for queue entries %d and %d: %s", entries[i].ID, entries[j].ID, err.Error()))
+				continue
 			}
 			if created {
 				matched[entries[i].ID] = true
@@ -474,13 +510,20 @@ func matchPvPQueue(now time.Time) error {
 var errPvPPairLost = errors.New("pvp queue ticket claimed concurrently")
 
 func pairPvPQueueEntries(first, second *PvPQueueEntry, now time.Time) (bool, error) {
+	// Escrow must equal the pot of the match, so mismatched stakes never pair.
+	if first.Stake != second.Stake {
+		return false, nil
+	}
 	created := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ?", first.ID, "waiting").Update("status", "matched")
+		// Claims are conditional on the snapshot's stake and stint: a ticket
+		// that was cancelled and re-queued (same row id) is a different escrow
+		// and must not be paired from stale data.
+		claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ? AND stake = ? AND enqueued_at = ?", first.ID, "waiting", first.Stake, first.EnqueuedAt).Update("status", "matched")
 		if claim.Error != nil || claim.RowsAffected == 0 {
 			return claim.Error
 		}
-		claim = tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ?", second.ID, "waiting").Update("status", "matched")
+		claim = tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ? AND stake = ? AND enqueued_at = ?", second.ID, "waiting", second.Stake, second.EnqueuedAt).Update("status", "matched")
 		if claim.Error != nil {
 			return claim.Error
 		}
@@ -549,10 +592,14 @@ func CreatePvPFriendly(userID, stake int, now time.Time) (*PvPMatchView, error) 
 	if err := cacheDecrUserQuota(userID, int64(stake)); err != nil {
 		common.SysLog(common.LogText("failed to sync pvp stake debit to user quota cache: %s", err.Error()))
 	}
+	applyPvPEvents([]pvpLogEvent{{userID: userID, kind: "stake", amount: stake}})
 	return buildPvPMatchView(DB, &match, userID, now)
 }
 
 func JoinPvPFriendly(userID int, code string, now time.Time) (*PvPMatchView, error) {
+	// Codes are generated as lower-case hex; normalising the input keeps lookups
+	// identical on case-insensitive (MySQL) and case-sensitive (SQLite, PG) databases.
+	code = strings.ToLower(strings.TrimSpace(code))
 	settings, err := GetGameSettings()
 	if err != nil {
 		return nil, err
@@ -570,12 +617,21 @@ func JoinPvPFriendly(userID int, code string, now time.Time) (*PvPMatchView, err
 		if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
 			return err
 		}
-		err := lockForUpdate(tx).Where("invite_code = ? AND status = ?", code, "invited").First(&match).Error
+		err := lockForUpdate(tx).Where("invite_code = ?", code).First(&match).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrPvPInvite
 		}
 		if err != nil {
 			return err
+		}
+		if match.Status == "cancelled" && match.Player2ID == 0 {
+			return ErrPvPInviteExpired
+		}
+		if match.Status != "invited" {
+			return ErrPvPInvite
+		}
+		if !now.Before(time.UnixMilli(match.CreatedAt).Add(pvpInviteTimeout)) {
+			return ErrPvPInviteExpired
 		}
 		if match.Player1ID == userID {
 			return ErrPvPInvite
@@ -602,7 +658,7 @@ func JoinPvPFriendly(userID int, code string, now time.Time) (*PvPMatchView, err
 		match.Secret2 = pvpSecret()
 		match.Seed = seed
 		match.StateJSON = string(encoded)
-		match.StartedAt = now.UnixMilli()
+		match.StartedAt = now.Add(pvpStartCountdown).UnixMilli()
 		match.Status = "playing"
 		if err := tx.Save(&match).Error; err != nil {
 			return err
@@ -615,14 +671,26 @@ func JoinPvPFriendly(userID int, code string, now time.Time) (*PvPMatchView, err
 	if err := cacheDecrUserQuota(userID, int64(match.Stake)); err != nil {
 		common.SysLog(common.LogText("failed to sync pvp stake debit to user quota cache: %s", err.Error()))
 	}
+	applyPvPEvents([]pvpLogEvent{{userID: userID, kind: "stake", amount: match.Stake}})
 	return buildPvPMatchView(DB, &match, userID, now)
 }
 
 // pvpAllowedTicks is how far server time lets the authoritative simulation
-// advance; the clamp bounds late packets after the duel should have ended.
+// advance; the clamp bounds late packets after the duel should have ended and
+// the start countdown keeps it at zero until StartedAt.
 func pvpAllowedTicks(match *PvPMatch, now time.Time) int {
-	elapsed := int((now.UnixMilli() - match.StartedAt) / tokengame.TickMillis)
-	return max(0, min(elapsed, tokengame.DuelDuration+tokengame.MaxInputBatch))
+	sinceStart := now.UnixMilli() - match.StartedAt
+	if sinceStart < 0 {
+		return 0
+	}
+	return min(int(sinceStart/tokengame.TickMillis), tokengame.DuelDuration+tokengame.MaxInputBatch)
+}
+
+// pvpCommitTicks is the last tick whose inputs are final: ticks inside the
+// grace window may still receive late batches, so the persisted simulation (and
+// therefore any settlement) never runs past it.
+func pvpCommitTicks(allowed int) int {
+	return max(0, allowed-pvpLateGraceTicks)
 }
 
 // pvpLoadInputs rebuilds each player's submitted stream from the stored
@@ -687,7 +755,28 @@ func SubmitPvPInput(userID int, matchID string, seq, from int, inputs []int, qui
 		if from != cursor || from+len(inputs) > allowed+2 {
 			return ErrPvPInput
 		}
-		encoded, err := common.Marshal(inputs)
+		var state tokengame.DuelState
+		if err := common.Unmarshal([]byte(match.StateJSON), &state); err != nil {
+			return err
+		}
+		// Anti-hindsight: ticks before the commit boundary are already simulated
+		// or past the grace window, so the stale part of a batch is stored as
+		// neutral, exactly what the simulation used for those ticks. The cursor
+		// still advances by the full length, so honest slow clients stay in
+		// sequence, while no player can rewrite history after watching the
+		// opponent. Persisted state, stored streams and replay stay consistent.
+		commit := pvpCommitTicks(allowed)
+		boundary := max(state.Tick, commit)
+		stored := inputs
+		if from < boundary {
+			stored = make([]int, len(inputs))
+			for i := range inputs {
+				if from+i >= boundary {
+					stored[i] = inputs[i]
+				}
+			}
+		}
+		encoded, err := common.Marshal(stored)
 		if err != nil {
 			return err
 		}
@@ -704,12 +793,13 @@ func SubmitPvPInput(userID int, matchID string, seq, from int, inputs []int, qui
 		if err != nil {
 			return err
 		}
-		var state tokengame.DuelState
-		if err := common.Unmarshal([]byte(match.StateJSON), &state); err != nil {
-			return err
-		}
-		tokengame.AdvanceDuel(&state, allowed, inputs1, inputs2)
-		if quit {
+		// The persisted state is the checkpoint: it only moves forward, never
+		// rebuilt from tick 0, because no accepted input can reach behind it.
+		tokengame.AdvanceDuel(&state, commit, inputs1, inputs2)
+		// A resignation only counts when it is what ended the duel; a duel the
+		// advance already finished keeps its result and logs no forfeit.
+		forfeited := quit && !state.Finished
+		if forfeited {
 			state.Forfeit(slot - 1)
 		}
 		encoded, err = common.Marshal(state)
@@ -718,7 +808,7 @@ func SubmitPvPInput(userID int, matchID string, seq, from int, inputs []int, qui
 		}
 		match.StateJSON = string(encoded)
 		if state.Finished {
-			if err := settlePvPMatch(tx, &match, &state, quit, now, &events); err != nil {
+			if err := settlePvPMatch(tx, &match, &state, forfeited, now, &events); err != nil {
 				return err
 			}
 		} else if err := tx.Save(&match).Error; err != nil {
@@ -846,7 +936,7 @@ func buildPvPMatchView(tx *gorm.DB, match *PvPMatch, userID int, now time.Time) 
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			// A soft- or hard-deleted opponent renders as a placeholder, as in
 			// the match list, instead of failing a money-path transaction.
-			view.Opponent.DisplayName = "Deleted account"
+			view.Opponent.DisplayName = pvpDeletedAccountName
 		default:
 			return nil, err
 		}
@@ -857,10 +947,31 @@ func buildPvPMatchView(tx *gorm.DB, match *PvPMatch, userID int, now time.Time) 
 			return nil, err
 		}
 		if match.Status == "playing" {
+			// The persisted state trails server time by the grace window. Clients
+			// get a read-only projection up to the allowed tick (neutral input for
+			// anything still in flight) so their mirror stays on the clock. A
+			// projection that would end the duel is not shown: only committed
+			// ticks may decide a result.
+			projected := &tokengame.DuelState{}
+			if err := common.Unmarshal([]byte(match.StateJSON), projected); err != nil {
+				return nil, err
+			}
+			inputs1, inputs2, err := pvpLoadInputs(tx, match.ID)
+			if err != nil {
+				return nil, err
+			}
+			tokengame.AdvanceDuel(projected, pvpAllowedTicks(match, now), inputs1, inputs2)
 			view.State = state
+			if !projected.Finished {
+				view.State = projected
+				state = projected
+			}
 		}
 		you, opponent := state.Players[slot-1], state.Players[2-slot]
-		view.You.Score, view.You.HP, view.You.Cursor = you.Score, you.HP, you.Cursor
+		// You.Cursor stays the accepted-input cursor of the match row: the committed
+		// state trails server time by the grace window, so its own cursor would
+		// make a client resend ticks the server already stored.
+		view.You.Score, view.You.HP = you.Score, you.HP
 		view.Opponent.Score, view.Opponent.HP, view.Opponent.Cursor = opponent.Score, opponent.HP, opponent.Cursor
 	}
 	if match.Status == "finished" {
@@ -877,12 +988,13 @@ func buildPvPMatchView(tx *gorm.DB, match *PvPMatch, userID int, now time.Time) 
 }
 
 // GetPvPMatchView returns the caller's active duel, or the most recent
-// finished one so clients can poll a settled result.
+// duel finished within pvpFinishedViewWindow so clients can poll a settled
+// result without a long-finished duel resurfacing forever.
 func GetPvPMatchView(userID int, now time.Time) (*PvPMatchView, error) {
 	var match PvPMatch
 	err := DB.Where("status IN ? AND (player1_id = ? OR player2_id = ?)", []string{"invited", "playing"}, userID, userID).Order("created_at DESC").First(&match).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		err = DB.Where("status = ? AND (player1_id = ? OR player2_id = ?)", "finished", userID, userID).Order("created_at DESC").First(&match).Error
+		err = DB.Where("status = ? AND finished_at >= ? AND (player1_id = ? OR player2_id = ?)", "finished", now.Add(-pvpFinishedViewWindow).UnixMilli(), userID, userID).Order("finished_at DESC").First(&match).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -1031,6 +1143,9 @@ type PvPReplayView struct {
 	Inputs     []PvPReplayBatch  `json:"inputs"`
 	StartedAt  int64             `json:"started_at"`
 	FinishedAt int64             `json:"finished_at"`
+	// Version is the duel engine version the match was simulated with, so a
+	// replay of an older match keeps using the rules it was played under.
+	Version int `json:"version"`
 }
 
 // GetPvPReplay returns the full input history, each batch tagged with its
@@ -1063,13 +1178,18 @@ func GetPvPReplay(userID int, matchID string) (*PvPReplayView, error) {
 			continue
 		}
 		var user User
-		if err := DB.First(&user, rows[i].UserID).Error; err != nil {
+		err := DB.First(&user, rows[i].UserID).Error
+		switch {
+		case err == nil:
+			if user.DisplayName != "" {
+				users[rows[i].UserID] = user.DisplayName
+			} else {
+				users[rows[i].UserID] = user.Username
+			}
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			users[rows[i].UserID] = pvpDeletedAccountName
+		default:
 			return nil, err
-		}
-		if user.DisplayName != "" {
-			users[rows[i].UserID] = user.DisplayName
-		} else {
-			users[rows[i].UserID] = user.Username
 		}
 	}
 	for i := range rows {
@@ -1090,10 +1210,36 @@ func GetPvPReplay(userID int, matchID string) (*PvPReplayView, error) {
 		}
 		inputs = append(inputs, PvPReplayBatch{ID: batch.ID, Player: batch.Player, Seq: batch.Seq, FromTick: batch.FromTick, Inputs: decoded, Quit: batch.Quit, ReceivedAt: batch.ReceivedAt})
 	}
-	return &PvPReplayView{Seed: match.Seed, Stake: match.Stake, Players: rows, WinnerSlot: match.WinnerSlot, Inputs: inputs, StartedAt: match.StartedAt, FinishedAt: match.FinishedAt}, nil
+	version := 1
+	if match.StateJSON != "" {
+		var stored struct {
+			Version int `json:"version"`
+		}
+		if err := common.Unmarshal([]byte(match.StateJSON), &stored); err == nil && stored.Version > 0 {
+			version = stored.Version
+		}
+	}
+	return &PvPReplayView{Seed: match.Seed, Stake: match.Stake, Players: rows, WinnerSlot: match.WinnerSlot, Inputs: inputs, StartedAt: match.StartedAt, FinishedAt: match.FinishedAt, Version: version}, nil
 }
 
-// forceFinishPvP ends an abandoned duel with neutral inputs and settles it.
+// pvpLastActive is the wall time of a player's most recent accepted batch, or
+// the match start when they never submitted one.
+func pvpLastActive(tx *gorm.DB, match *PvPMatch, slot int) (int64, error) {
+	var received []int64
+	if err := tx.Model(&PvPInput{}).Where("match_id = ? AND player = ?", match.ID, slot).Order("received_at DESC").Limit(1).Pluck("received_at", &received).Error; err != nil {
+		return 0, err
+	}
+	if len(received) == 0 {
+		return match.StartedAt, nil
+	}
+	return max(received[0], match.StartedAt), nil
+}
+
+// forceFinishPvP settles a duel whose input window closed without a result.
+// Presence decides the outcome instead of neutral play: when both players have
+// been silent (a double no-show or a gateway outage) the duel is void and both
+// stakes are refunded through the draw path; when only one is silent that
+// player forfeits; otherwise the remaining ticks run out with neutral input.
 func forceFinishPvP(match *PvPMatch, now time.Time) error {
 	var events []pvpLogEvent
 	err := DB.Transaction(func(tx *gorm.DB) error {
@@ -1103,21 +1249,42 @@ func forceFinishPvP(match *PvPMatch, now time.Time) error {
 		if match.Status != "playing" {
 			return nil
 		}
-		inputs1, inputs2, err := pvpLoadInputs(tx, match.ID)
-		if err != nil {
-			return err
-		}
 		var state tokengame.DuelState
 		if err := common.Unmarshal([]byte(match.StateJSON), &state); err != nil {
 			return err
 		}
-		tokengame.AdvanceDuel(&state, tokengame.DuelDuration, inputs1, inputs2)
+		var stale [2]bool
+		for slot := 1; slot <= 2; slot++ {
+			last, err := pvpLastActive(tx, match, slot)
+			if err != nil {
+				return err
+			}
+			stale[slot-1] = now.UnixMilli()-last > pvpAbandonAfter.Milliseconds()
+		}
+		forfeited := false
+		switch {
+		case stale[0] && stale[1]:
+			state.Finished, state.Winner = true, 3
+		case stale[0] || stale[1]:
+			loser := 0
+			if stale[1] {
+				loser = 1
+			}
+			state.Forfeit(loser)
+			forfeited = true
+		default:
+			inputs1, inputs2, err := pvpLoadInputs(tx, match.ID)
+			if err != nil {
+				return err
+			}
+			tokengame.AdvanceDuel(&state, tokengame.DuelDuration, inputs1, inputs2)
+		}
 		encoded, err := common.Marshal(state)
 		if err != nil {
 			return err
 		}
 		match.StateJSON = string(encoded)
-		return settlePvPMatch(tx, match, &state, false, now, &events)
+		return settlePvPMatch(tx, match, &state, forfeited, now, &events)
 	})
 	if err != nil {
 		return err
@@ -1151,10 +1318,45 @@ func cancelPvPInvite(match *PvPMatch, now time.Time) error {
 	return nil
 }
 
+// CancelPvPFriendly lets the creator withdraw an open invite and get the
+// escrow back. It is idempotent: cancelling an invite that is already gone,
+// joined or cancelled is a no-op, and the refund ledger key is shared with
+// the expiry sweep so the stake can never be refunded twice.
+func CancelPvPFriendly(userID int, now time.Time) error {
+	var events []pvpLogEvent
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
+			return err
+		}
+		var match PvPMatch
+		err := lockForUpdate(tx).Where("player1_id = ? AND mode = ? AND status = ?", userID, "friendly", "invited").First(&match).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		match.Status = "cancelled"
+		match.FinishedAt = now.UnixMilli()
+		credited, err := creditPvP(tx, "refund:"+match.ID+":1", "overflow:"+match.ID+":1", match.ID, match.Player1ID, match.Stake, "refund", now)
+		if err != nil {
+			return err
+		}
+		events = append(events, pvpLogEvent{userID: match.Player1ID, kind: "refund", amount: credited})
+		return tx.Save(&match).Error
+	})
+	if err != nil {
+		return err
+	}
+	applyPvPEvents(events)
+	return nil
+}
+
 func refundQueueEntry(entry *PvPQueueEntry, now time.Time) error {
 	var events []pvpLogEvent
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ?", entry.ID, "waiting").Update("status", "cancelled")
+		claim := tx.Model(&PvPQueueEntry{}).Where("id = ? AND status = ? AND enqueued_at = ?", entry.ID, "waiting", entry.EnqueuedAt).Update("status", "cancelled")
 		if claim.Error != nil || claim.RowsAffected == 0 {
 			return claim.Error
 		}
@@ -1173,47 +1375,84 @@ func refundQueueEntry(entry *PvPQueueEntry, now time.Time) error {
 	return nil
 }
 
-// MaintainPvP retries matchmaking, refunds stale queue entries and invites,
-// and force-settles duels whose input window has closed.
-func MaintainPvP(now time.Time) error {
-	if err := matchPvPQueue(now); err != nil {
-		return err
-	}
-	var stale []PvPQueueEntry
-	if err := DB.Where("status = ? AND enqueued_at < ?", "waiting", now.Add(-pvpQueueWaitLimit).UnixMilli()).Limit(100).Find(&stale).Error; err != nil {
-		return err
-	}
-	for i := range stale {
-		if err := refundQueueEntry(&stale[i], now); err != nil {
-			// One poisoned ticket must not starve the later phases.
-			common.SysError(common.LogText("pvp stale queue refund failed for entry %d: %s", stale[i].ID, err.Error()))
+// guardPvPMaintenance runs one maintenance phase and turns a panic into an
+// error, so a single bad row can neither skip the later phases nor kill the
+// gateway process.
+func guardPvPMaintenance(phase string, fn func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			common.SysError(common.LogText("pvp maintenance panic in %s: %v\n%s", phase, recovered, debug.Stack()))
+			err = fmt.Errorf("panic in %s: %v", phase, recovered)
 		}
-	}
-	var expired []PvPMatch
-	if err := DB.Where("status = ? AND created_at < ?", "invited", now.Add(-pvpInviteTimeout).UnixMilli()).Limit(100).Find(&expired).Error; err != nil {
-		return err
-	}
-	for i := range expired {
-		if err := cancelPvPInvite(&expired[i], now); err != nil {
-			common.SysError(common.LogText("pvp expired invite cancel failed for match %s: %s", expired[i].ID, err.Error()))
-		}
-	}
-	deadline := int64(tokengame.DuelDuration+tokengame.MaxInputBatch+30) * tokengame.TickMillis
-	var running []PvPMatch
-	if err := DB.Where("status = ? AND started_at < ?", "playing", now.UnixMilli()-deadline).Limit(50).Find(&running).Error; err != nil {
-		return err
-	}
-	for i := range running {
-		if err := forceFinishPvP(&running[i], now); err != nil {
-			common.SysError(common.LogText("pvp force finish failed for match %s: %s", running[i].ID, err.Error()))
-		}
-	}
-	return nil
+	}()
+	return fn()
 }
 
+// MaintainPvP retries matchmaking, refunds stale queue entries and invites,
+// and force-settles duels whose input window has closed. Every phase runs
+// independently (refunds never depend on the matchmaking settings), failures
+// are logged, and the first error is returned once all phases have run.
+func MaintainPvP(now time.Time) error {
+	var firstErr error
+	phase := func(name string, fn func() error) {
+		if err := guardPvPMaintenance(name, fn); err != nil {
+			common.SysError(common.LogText("pvp maintenance phase %s failed: %s", name, err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	phase("matchmaking", func() error { return matchPvPQueue(now) })
+	phase("stale queue refunds", func() error {
+		var stale []PvPQueueEntry
+		if err := DB.Where("status = ? AND enqueued_at < ?", "waiting", now.Add(-pvpQueueWaitLimit).UnixMilli()).Limit(100).Find(&stale).Error; err != nil {
+			return err
+		}
+		for i := range stale {
+			if err := refundQueueEntry(&stale[i], now); err != nil {
+				// One poisoned ticket must not starve the later tickets or phases.
+				common.SysError(common.LogText("pvp stale queue refund failed for entry %d: %s", stale[i].ID, err.Error()))
+			}
+		}
+		return nil
+	})
+	phase("expired invites", func() error {
+		var expired []PvPMatch
+		if err := DB.Where("status = ? AND created_at < ?", "invited", now.Add(-pvpInviteTimeout).UnixMilli()).Limit(100).Find(&expired).Error; err != nil {
+			return err
+		}
+		for i := range expired {
+			if err := cancelPvPInvite(&expired[i], now); err != nil {
+				common.SysError(common.LogText("pvp expired invite cancel failed for match %s: %s", expired[i].ID, err.Error()))
+			}
+		}
+		return nil
+	})
+	phase("abandoned duels", func() error {
+		deadline := int64(tokengame.DuelDuration+tokengame.MaxInputBatch+30) * tokengame.TickMillis
+		var running []PvPMatch
+		if err := DB.Where("status = ? AND started_at < ?", "playing", now.UnixMilli()-deadline).Limit(50).Find(&running).Error; err != nil {
+			return err
+		}
+		for i := range running {
+			if err := forceFinishPvP(&running[i], now); err != nil {
+				common.SysError(common.LogText("pvp force finish failed for match %s: %s", running[i].ID, err.Error()))
+			}
+		}
+		return nil
+	})
+	return firstErr
+}
+
+// RunPvPMaintenance sweeps every few seconds on the master node only; the
+// sweep is idempotent through status claims and ledger keys, so other nodes
+// would merely multiply lock contention.
 func RunPvPMaintenance() {
+	if !common.IsMasterNode {
+		return
+	}
 	for {
-		if err := MaintainPvP(time.Now()); err != nil {
+		if err := guardPvPMaintenance("sweep", func() error { return MaintainPvP(time.Now()) }); err != nil {
 			common.SysError(common.LogText("pvp maintenance failed: %s", err.Error()))
 		}
 		time.Sleep(5 * time.Second)

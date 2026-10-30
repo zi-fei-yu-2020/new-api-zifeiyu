@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { isAxiosError } from 'axios'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
@@ -35,6 +36,22 @@ import {
 
 export type DuelInput = { direction: number; dash: boolean; upgrade: number }
 
+// A 429 or a transport failure means the batch may never have reached the
+// server, so the unacknowledged inputs stay queued and the same batch is sent
+// again after the returned delay. Anything else (a rejected packet, an expired
+// session) cannot be fixed by resending and falls back to recovery. The delay
+// is in milliseconds; null means the failure is not transient.
+function transientRetryDelay(error: unknown): number | null {
+  if (!isAxiosError(error)) return null
+  const status = error.response?.status
+  if (status === undefined) return 0
+  if (status === 502 || status === 503 || status === 504) return 1000
+  if (status !== 429) return null
+  const seconds = Number(error.response?.headers?.['retry-after'])
+  if (!Number.isFinite(seconds) || seconds <= 0) return 2000
+  return Math.min(seconds, 10) * 1000
+}
+
 // useDuelSession mirrors useGameSession for duels: the local engine runs the
 // whole duel world with the player's own inputs applied immediately, every
 // synchronization sends one strictly sequenced, HMAC-signed batch and the
@@ -46,6 +63,9 @@ export function useDuelSession(onFinish: () => void) {
   const [connection, setConnection] = useState<'online' | 'reconnecting'>(
     'online'
   )
+  // Whole seconds until tick 0; the server starts every duel a few seconds
+  // after pairing so both players can arrive before the clock runs.
+  const [countdown, setCountdown] = useState(0)
   const state = useRef<DuelState>(newDuel(42))
   const session = useRef<PvPMatchView | null>(null)
   const slot = useRef(1)
@@ -60,6 +80,7 @@ export function useDuelSession(onFinish: () => void) {
   const request = useRef<AbortController | null>(null)
   const quitRequested = useRef(false)
   const recoveryRequested = useRef(false)
+  const retryAt = useRef(0)
   const onFinishRef = useRef(onFinish)
   onFinishRef.current = onFinish
 
@@ -73,11 +94,15 @@ export function useDuelSession(onFinish: () => void) {
   const install = useCallback(
     (next: PvPMatchView | null) => {
       cancelSynchronization()
+      const preserveQuit =
+        quitRequested.current &&
+        next?.status === 'playing' &&
+        next.id === session.current?.id
       if (next?.id !== session.current?.id || next?.status !== 'playing') {
         input.current = { direction: 0, dash: false, upgrade: 0 }
       }
       session.current = next
-      quitRequested.current = false
+      quitRequested.current = preserveQuit
       recoveryRequested.current = false
       slot.current = next?.you.slot ?? 1
       secret.current = next?.you.secret ?? ''
@@ -89,9 +114,18 @@ export function useDuelSession(onFinish: () => void) {
         state.current = newDuel(next?.seed ?? 42)
       }
       pending.current = []
+      retryAt.current = 0
       clockOrigin.current =
         performance.now() -
         (next ? next.server_time - (next.started_at || next.server_time) : 0)
+      setCountdown(
+        next?.status === 'playing'
+          ? Math.max(
+              0,
+              Math.ceil((clockOrigin.current - performance.now()) / 1000)
+            )
+          : 0
+      )
       setMatch(next)
       setDisplay(structuredClone(state.current))
       setConnection('online')
@@ -109,13 +143,25 @@ export function useDuelSession(onFinish: () => void) {
     ) {
       return Promise.resolve()
     }
+    const now = performance.now()
+    // Nothing to report before tick 0 unless a packet is already queued or
+    // the player resigns, and a rate-limited client waits out Retry-After.
+    if (
+      (now < retryAt.current && !quitRequested.current) ||
+      (now < clockOrigin.current &&
+        pending.current.length === 0 &&
+        !quitRequested.current &&
+        !recoveryRequested.current)
+    ) {
+      return Promise.resolve()
+    }
     const version = generation.current
     const controller = new AbortController()
     request.current = controller
     const task = Promise.resolve()
       .then(async () => {
         try {
-          if (recoveryRequested.current && !quitRequested.current) {
+          if (recoveryRequested.current) {
             const fresh = await getPvPMatch(controller.signal)
             if (generation.current !== version || controller.signal.aborted) {
               return
@@ -179,6 +225,7 @@ export function useDuelSession(onFinish: () => void) {
             else step(state.current, 0, value)
           }
           session.current = confirmed
+          retryAt.current = 0
           setMatch(confirmed)
           setDisplay(structuredClone(state.current))
           setConnection(remaining.length >= 50 ? 'reconnecting' : 'online')
@@ -186,12 +233,17 @@ export function useDuelSession(onFinish: () => void) {
             recoveryRequested.current = false
             onFinishRef.current()
           }
-        } catch {
+        } catch (error) {
           if (generation.current === version && !controller.signal.aborted) {
-            // Either transport failed or the server rejected the packet (for
-            // example a duplicate sequence after a timeout); re-installing the
-            // authoritative duel is safe in both cases.
-            recoveryRequested.current = true
+            const delay = transientRetryDelay(error)
+            if (delay === null) {
+              // The server rejected the packet (for example a duplicate
+              // sequence after a timeout); re-installing the authoritative
+              // duel is the only way back in step.
+              recoveryRequested.current = true
+            } else {
+              retryAt.current = performance.now() + delay
+            }
             setConnection('reconnecting')
           }
         }
@@ -209,6 +261,14 @@ export function useDuelSession(onFinish: () => void) {
   useEffect(() => {
     const simulate = window.setInterval(() => {
       const current = session.current
+      if (current?.status === 'playing') {
+        setCountdown(
+          Math.max(
+            0,
+            Math.ceil((clockOrigin.current - performance.now()) / 1000)
+          )
+        )
+      }
       if (
         !current ||
         current.status !== 'playing' ||
@@ -271,6 +331,7 @@ export function useDuelSession(onFinish: () => void) {
     const reconnect = () => {
       if (session.current?.status !== 'playing') return
       cancelSynchronization()
+      retryAt.current = 0
       setConnection('reconnecting')
       void synchronize()
     }
@@ -289,8 +350,13 @@ export function useDuelSession(onFinish: () => void) {
     quitRequested.current = true
     input.current = { direction: 0, dash: false, upgrade: 0 }
     if (inFlight.current) await inFlight.current
-    await synchronize()
+    // A recovery round only refreshes the cursor and sequence number, so the
+    // quit batch itself goes out on a following round.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await synchronize()
+      if (session.current?.status !== 'playing') return
+    }
   }
 
-  return { match, display, state, input, connection, install, quit }
+  return { match, display, state, input, connection, countdown, install, quit }
 }

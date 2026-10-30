@@ -16,22 +16,50 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout/components/public-layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { DailyChallenge } from './daily-challenge'
+import { Match3Panel } from './match3/match3-panel'
+import { match3StatusQueryOptions } from './match3/query-options'
 import { PvpLobby } from './pvp/lobby'
+import { gameStatusQueryOptions, pvpStatusQueryOptions } from './query-options'
 
 import './game-center.css'
 
+type GameTab = 'daily' | 'pvp' | 'match3'
+
 export function GameCenter() {
   const { t } = useTranslation()
+  const pvpStatus = useQuery(pvpStatusQueryOptions)
+  const gameStatus = useQuery(gameStatusQueryOptions)
+  const match3Status = useQuery(match3StatusQueryOptions)
+  const [picked, setPicked] = useState<GameTab | null>(null)
+  // A live or pending duel pins the PvP tab, and a running tile run pins the
+  // tile tab, until the player chooses another one, so a reload does not leave
+  // them on a tab that is not running it. A running token survivor run takes
+  // precedence over a tile run because it keeps fighting without input.
+  const duelStatus = pvpStatus.data?.match?.status
+  const duelLive = duelStatus === 'playing' || duelStatus === 'invited'
+  const survivorLive = gameStatus.data?.run?.status === 'running'
+  const match3Live =
+    match3Status.data?.daily_run?.status === 'running' ||
+    match3Status.data?.endless_run?.status === 'running'
+  let tab: GameTab = 'daily'
+  if (picked) tab = picked
+  else if (duelLive) tab = 'pvp'
+  else if (match3Live && !survivorLive) tab = 'match3'
   return (
     <PublicLayout showMainContainer={false}>
       <main className='game-center mx-auto max-w-[1320px] px-4 pt-24 pb-12 sm:px-6 lg:px-8'>
-        <Tabs defaultValue='daily'>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setPicked(value as GameTab)}
+        >
           <TabsList
             variant='line'
             aria-label={t('Game modes')}
@@ -39,12 +67,18 @@ export function GameCenter() {
           >
             <TabsTrigger value='daily'>{t('Daily challenge')}</TabsTrigger>
             <TabsTrigger value='pvp'>{t('PvP duels')}</TabsTrigger>
+            <TabsTrigger value='match3'>{t('Tile Match')}</TabsTrigger>
           </TabsList>
-          <TabsContent value='daily'>
-            <DailyChallenge />
+          {/* All panels stay mounted: unmounting a panel would stop the run or
+              duel session and with it the inputs the server is waiting for. */}
+          <TabsContent value='daily' keepMounted>
+            <DailyChallenge visible={tab === 'daily'} />
           </TabsContent>
-          <TabsContent value='pvp'>
-            <PvpLobby />
+          <TabsContent value='pvp' keepMounted>
+            <PvpLobby visible={tab === 'pvp'} />
+          </TabsContent>
+          <TabsContent value='match3' keepMounted>
+            <Match3Panel visible={tab === 'match3'} />
           </TabsContent>
         </Tabs>
       </main>

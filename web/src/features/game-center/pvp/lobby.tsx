@@ -16,7 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { Move, Swords, Timer, Trophy, Users, Zap } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -26,6 +31,8 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { toIntlLocale } from '@/i18n/languages'
+import { api } from '@/lib/api'
 import {
   formatNumber,
   formatQuota,
@@ -34,23 +41,31 @@ import {
   quotaUnitsToDollars,
 } from '@/lib/format'
 
+import { pvpStatusQueryOptions } from '../query-options'
 import {
   createPvPFriendly,
-  getPvPStatus,
   joinPvPFriendly,
   joinPvPQueue,
   leavePvPQueue,
   listPvPMatches,
   type PvPMatchView,
+  type PvPStatus,
 } from './api'
 import { DuelArena } from './duel-arena'
 import { DUEL_DURATION } from './duel-engine'
 import { DuelReplay } from './replay'
 import { useDuelSession } from './use-duel-session'
 
+// The backend sends this English placeholder for a removed opponent.
+const DELETED_ACCOUNT = 'Deleted account'
+
+function playerName(name: string, t: (key: string) => string) {
+  return name === DELETED_ACCOUNT ? t(DELETED_ACCOUNT) : name
+}
+
 function opponentLabel(match: PvPMatchView, t: (key: string) => string) {
   if (!match.opponent.id) return t('Waiting for an opponent')
-  return match.opponent.display_name || match.opponent.name
+  return playerName(match.opponent.display_name || match.opponent.name, t)
 }
 
 function duelOutcomeLabel(
@@ -81,6 +96,12 @@ function matchResultClass(result: string) {
   return 'text-muted-foreground'
 }
 
+function matchStatusLabel(status: string, t: (key: string) => string) {
+  if (status === 'playing') return t('Duel in progress')
+  if (status === 'cancelled') return t('Cancelled')
+  return t('Awaiting opponent')
+}
+
 function reportError(
   error: unknown,
   fallback: string,
@@ -90,15 +111,13 @@ function reportError(
   toast.error(message ? t(message) : t(fallback))
 }
 
-export function PvpLobby() {
+export function PvpLobby(props: { visible?: boolean }) {
+  const visible = props.visible ?? true
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const status = useQuery({
-    queryKey: ['pvp-status'],
-    queryFn: ({ signal }) => getPvPStatus(signal),
-    refetchOnWindowFocus: false,
+    ...pvpStatusQueryOptions,
     staleTime: 0,
-    meta: { errorToast: false },
     refetchInterval: (query) => {
       const match = query.state.data?.match
       if (match && match.status === 'playing') return false
@@ -112,16 +131,42 @@ export function PvpLobby() {
   })
   const { install } = session
   const sessionMatch = session.match
-  const active = sessionMatch ?? status.data?.match ?? null
+  // The backend only reports a finished duel for a few minutes after it
+  // ended, so a settled result is not reopened on every later visit.
+  const view = status.data?.match ?? null
+  const active = sessionMatch ?? view
   const [dismissed, setDismissed] = useState<string | null>(null)
   useEffect(() => {
-    const view = status.data?.match
+    if (sessionMatch?.status === 'invited' && view?.id !== sessionMatch.id) {
+      install(null)
+      toast.error(t('PvP invite code has expired'))
+      return
+    }
+    if (
+      view &&
+      sessionMatch?.id === view.id &&
+      sessionMatch.status === 'finished' &&
+      view.status !== 'finished'
+    ) {
+      return
+    }
     if (!view || view.id === dismissed) return
     if (sessionMatch?.id === view.id && sessionMatch.status === view.status) {
       return
     }
     install(view)
-  }, [status.data, sessionMatch?.id, sessionMatch?.status, dismissed, install])
+  }, [view, sessionMatch?.id, sessionMatch?.status, dismissed, install, t])
+  const afterInviteCancelled = () => {
+    // Drop the stale invite from the cache first, otherwise the next render
+    // would install it again and the refetch would report it as expired.
+    queryClient.setQueryData<PvPStatus>(['pvp-status'], (current) =>
+      current ? { ...current, match: null } : current
+    )
+    install(null)
+    void queryClient.invalidateQueries({ queryKey: ['pvp-status'] })
+    void queryClient.invalidateQueries({ queryKey: ['pvp-matches'] })
+    void queryClient.invalidateQueries({ queryKey: ['user'] })
+  }
   const leaveResult = () => {
     if (active) setDismissed(active.id)
     install(null)
@@ -134,7 +179,7 @@ export function PvpLobby() {
       ? sessionMatch
       : null
 
-  if (status.isError) {
+  if (status.isError && !status.data) {
     return (
       <div role='alert' className='mb-5 border p-5'>
         <p>{t('Unable to load PvP status')}</p>
@@ -155,34 +200,64 @@ export function PvpLobby() {
       </div>
     )
   }
-  if (!status.data.enabled) {
-    return (
-      <div className='border p-5'>
-        <p className='text-sm'>{t('PvP duels are currently disabled')}</p>
-      </div>
-    )
-  }
+  const disabled = !status.data.enabled
   const inDuel =
-    !!ownedMatch ||
-    (active?.status === 'invited' && active.id !== dismissed)
+    !!ownedMatch || (active?.status === 'invited' && active.id !== dismissed)
   const waiting = !inDuel && !!status.data.queue
+  // Turning PvP off only blocks new entries: a duel, invite or queue ticket
+  // that already exists stays visible so it can finish or be cancelled.
+  const showQueue = !inDuel && (!disabled || !!status.data.queue)
+  const showFriendly = !inDuel && !waiting && !disabled
   return (
     <div className='space-y-5'>
-      {ownedMatch ? (
-        <DuelStage match={ownedMatch} session={session} onExit={leaveResult} />
+      {status.isError ? (
+        <div
+          role='alert'
+          className='flex flex-wrap items-center justify-between gap-2 border p-3 text-sm'
+        >
+          <p>
+            {t('Unable to refresh PvP status. Showing the last known data.')}
+          </p>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => void status.refetch()}
+          >
+            {t('Retry')}
+          </Button>
+        </div>
       ) : null}
-      {!ownedMatch && active?.status === 'invited' && active.id !== dismissed ? (
-        <InvitePanel match={active} />
+      {disabled && !inDuel ? (
+        <div className='border p-5'>
+          <p className='text-sm'>{t('PvP duels are currently disabled')}</p>
+        </div>
+      ) : null}
+      {ownedMatch ? (
+        <DuelStage
+          match={ownedMatch}
+          session={session}
+          visible={visible}
+          onExit={leaveResult}
+        />
+      ) : null}
+      {!ownedMatch &&
+      active?.status === 'invited' &&
+      active.id !== dismissed ? (
+        <InvitePanel match={active} onCancelled={afterInviteCancelled} />
       ) : null}
       {!ownedMatch &&
       active?.status === 'finished' &&
       active.id !== dismissed ? (
         <ResultBanner match={active} onBack={leaveResult} />
       ) : null}
-      {inDuel ? null : (
-        <QueuePanel queue={status.data.queue} bounds={status.data} />
-      )}
-      {inDuel || waiting ? null : <FriendlyPanel bounds={status.data} />}
+      {showQueue ? (
+        <QueuePanel
+          queue={status.data.queue}
+          bounds={status.data}
+          disabled={disabled}
+        />
+      ) : null}
+      {showFriendly ? <FriendlyPanel bounds={status.data} /> : null}
       <HistoryPanel />
     </div>
   )
@@ -191,13 +266,16 @@ export function PvpLobby() {
 function DuelStage({
   match,
   session,
+  visible,
   onExit,
 }: {
   match: PvPMatchView
   session: ReturnType<typeof useDuelSession>
+  visible: boolean
   onExit: () => void
 }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [confirmQuit, setConfirmQuit] = useState(false)
   const { display, input, connection } = session
   const mySlot = match.you.slot
@@ -209,6 +287,13 @@ function DuelStage({
     me.upgrades < Math.min(3, Math.floor(display.tick / 200))
   const [stick, setStick] = useState({ x: 0, y: 0 })
   const finished = match.status === 'finished'
+  // A finished view carries the settled numbers; the local mirror may be a
+  // fresh duel (reopened result) or a slightly different prediction.
+  const myScore = finished ? match.you.score : me.score
+  const opponentScore = finished ? match.opponent.score : opponent.score
+  const myHp = finished ? match.you.hp : me.hp
+  const opponentHp = finished ? match.opponent.hp : opponent.hp
+  const secondsLeft = finished ? 0 : seconds
   function moveStick(e: React.PointerEvent<HTMLDivElement>) {
     if (finished || !e.currentTarget.hasPointerCapture(e.pointerId)) return
     const rect = e.currentTarget.getBoundingClientRect()
@@ -242,7 +327,7 @@ function DuelStage({
         <div className='p-3 sm:px-5'>
           <p className='text-muted-foreground text-[11px]'>{t('Your score')}</p>
           <p className='mt-1 font-mono text-xl font-medium sm:text-2xl'>
-            {formatNumber(me.score)}
+            {formatNumber(myScore, locale)}
           </p>
         </div>
         <div className='p-3 sm:px-5'>
@@ -250,7 +335,8 @@ function DuelStage({
             {t('Time remaining')}
           </p>
           <p className='mt-1 font-mono text-xl font-medium tabular-nums sm:text-2xl'>
-            {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
+            {Math.floor(secondsLeft / 60)}:
+            {String(secondsLeft % 60).padStart(2, '0')}
           </p>
         </div>
         <div className='p-3 sm:px-5'>
@@ -258,22 +344,39 @@ function DuelStage({
             {t('Opponent score')}
           </p>
           <p className='mt-1 font-mono text-xl font-medium sm:text-2xl'>
-            {formatNumber(opponent.score)}
+            {formatNumber(opponentScore, locale)}
           </p>
         </div>
       </div>
       <div className='text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 border-b px-4 py-2 text-[11px] sm:px-5'>
         <span>
-          {t('Your HP')}: {me.hp}/{me.max_hp}
+          {t('Your HP')}: {myHp}/{me.max_hp}
         </span>
         <span>
-          {t('Opponent HP')}: {opponent.hp}/{opponent.max_hp}
+          {t('Opponent HP')}: {opponentHp}/{opponent.max_hp}
         </span>
         <span>{t('Damage {{value}}', { value: me.power })}</span>
         <span>{t('Targets {{count}}', { count: 1 + me.extra_targets })}</span>
       </div>
       <div className='relative overflow-hidden'>
-        <DuelArena state={session.state} mySlot={mySlot} active input={input} />
+        <DuelArena
+          state={session.state}
+          mySlot={mySlot}
+          active={visible}
+          input={input}
+        />
+        {session.countdown > 0 && !finished ? (
+          <div
+            role='status'
+            className='absolute inset-0 flex items-center justify-center bg-white/35 p-4'
+          >
+            <p className='bg-background/95 border px-6 py-4 text-center text-lg font-semibold shadow-sm'>
+              {t('Get ready. The duel starts in {{seconds}}s', {
+                seconds: session.countdown,
+              })}
+            </p>
+          </div>
+        ) : null}
         {upgradeReady && !finished ? (
           <div className='bg-background/90 absolute top-3 right-3 w-56 border p-3 shadow-sm'>
             <p className='text-xs font-semibold'>{t('Choose your upgrade')}</p>
@@ -404,9 +507,37 @@ function DuelStage({
   )
 }
 
-function InvitePanel({ match }: { match: PvPMatchView }) {
+function InvitePanel({
+  match,
+  onCancelled,
+}: {
+  match: PvPMatchView
+  onCancelled: () => void
+}) {
   const { t } = useTranslation()
   const code = match.invite_code ?? ''
+  const cancel = useMutation({
+    mutationFn: async () => {
+      const response = await api.delete<{
+        success: boolean
+        message?: string
+      }>('/api/user/game/pvp/friendly', {
+        skipErrorHandler: true,
+        skipBusinessError: true,
+      })
+      if (!response.data.success) {
+        throw new Error(
+          response.data.message || 'Unable to cancel the friendly duel'
+        )
+      }
+    },
+    onSuccess: () => {
+      toast.success(t('Invite cancelled'))
+      onCancelled()
+    },
+    onError: (error: Error) =>
+      reportError(error, 'Unable to cancel the friendly duel', t),
+  })
   return (
     <section className='border p-5' aria-label={t('Friendly duel invite')}>
       <div className='flex items-center justify-between text-sm font-medium'>
@@ -426,6 +557,15 @@ function InvitePanel({ match }: { match: PvPMatchView }) {
           tooltip={t('Copy invite code')}
         />
       </div>
+      <Button
+        variant='outline'
+        size='sm'
+        className='mt-4'
+        disabled={cancel.isPending}
+        onClick={() => cancel.mutate()}
+      >
+        {t('Cancel invite')}
+      </Button>
     </section>
   )
 }
@@ -478,9 +618,11 @@ function stakeTiers(min: number, max: number) {
 function QueuePanel({
   queue,
   bounds,
+  disabled,
 }: {
   queue: { waiting: boolean; waited_ms: number; stake: number } | null
   bounds: { min_stake: number; max_stake: number }
+  disabled: boolean
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -559,7 +701,7 @@ function QueuePanel({
           </p>
           <Button
             className='mt-4'
-            disabled={join.isPending}
+            disabled={disabled || join.isPending}
             onClick={() => join.mutate()}
           >
             {t('Find an opponent')}
@@ -595,7 +737,8 @@ function FriendlyPanel({
       reportError(error, 'Unable to create a friendly duel', t),
   })
   const join = useMutation({
-    mutationFn: () => joinPvPFriendly(code.trim()),
+    // Invite codes are lower-case hex; match them however they were typed.
+    mutationFn: () => joinPvPFriendly(code.trim().toLowerCase()),
     onSuccess: () => {
       setCode('')
       void queryClient.invalidateQueries({ queryKey: ['pvp-status'] })
@@ -651,6 +794,9 @@ function FriendlyPanel({
             id='pvp-friendly-code'
             value={code}
             maxLength={16}
+            autoCapitalize='off'
+            autoCorrect='off'
+            spellCheck={false}
             placeholder='a1b2c3d4'
             onChange={(e) => setCode(e.target.value)}
             className='mt-1'
@@ -669,12 +815,14 @@ function FriendlyPanel({
 }
 
 function HistoryPanel() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
   const [replayId, setReplayId] = useState<string | null>(null)
   const matches = useQuery({
     queryKey: ['pvp-matches', page],
     queryFn: ({ signal }) => listPvPMatches(page, 10, signal),
+    placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
     meta: { errorToast: false },
   })
@@ -687,6 +835,11 @@ function HistoryPanel() {
         <p className='mt-4 text-sm' role='alert'>
           {t('Unable to load PvP matches')}
         </p>
+      )
+    }
+    if (matches.isPending) {
+      return (
+        <p className='text-muted-foreground mt-4 text-sm'>{t('Loading...')}</p>
       )
     }
     if (items.length === 0) {
@@ -705,14 +858,15 @@ function HistoryPanel() {
           >
             <div className='min-w-0'>
               <p className='truncate text-sm font-medium'>
-                {item.opponent_name || '—'}
+                {playerName(item.opponent_name, t) || '—'}
                 <span className='text-muted-foreground ml-2 text-xs font-normal'>
                   {item.mode === 'friendly' ? t('Friendly') : t('Ranked')}
                 </span>
               </p>
               <p className='text-muted-foreground mt-0.5 font-mono text-xs'>
-                {formatNumber(item.my_score)} :{' '}
-                {formatNumber(item.opponent_score)} · {formatQuota(item.stake)}
+                {formatNumber(item.my_score, locale)} :{' '}
+                {formatNumber(item.opponent_score, locale)} ·{' '}
+                {formatQuota(item.stake)}
               </p>
             </div>
             <div className='flex items-center gap-2'>
@@ -724,9 +878,7 @@ function HistoryPanel() {
                 </span>
               ) : (
                 <span className='text-muted-foreground text-xs'>
-                  {item.status === 'playing'
-                    ? t('Duel in progress')
-                    : t('Awaiting opponent')}
+                  {matchStatusLabel(item.status, t)}
                 </span>
               )}
               {item.status === 'finished' ? (
@@ -749,7 +901,7 @@ function HistoryPanel() {
       <div className='flex items-center justify-between text-sm font-medium'>
         <span>{t('PvP match history')}</span>
         <span className='text-muted-foreground text-xs font-normal'>
-          {formatNumber(total)} {t('duels')}
+          {formatNumber(total, locale)} {t('duels')}
         </span>
       </div>
       {replayId ? (

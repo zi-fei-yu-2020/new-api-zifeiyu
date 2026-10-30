@@ -58,6 +58,7 @@ var accessTokenExemptRoutes = []string{
 	// Payment callbacks.
 	"POST /api/stripe/webhook",
 	"POST /api/creem/webhook",
+	"POST /api/bepusdt/notify",
 	"POST /api/waffo/webhook",
 	"POST /api/waffo-pancake/webhook/:env",
 	"GET /api/user/epay/notify",
@@ -128,7 +129,7 @@ func TestAccessTokenRouteRulesCoverEveryDashboardRoute(t *testing.T) {
 		assert.True(t, panel[key], "declared route %s is not a registered panel route", key)
 	}
 
-	for _, key := range []string{"GET /api/user/game", "GET /api/user/game/rewards", "GET /api/user/game/rankings", "POST /api/user/game/start", "POST /api/user/game/input", "PUT /api/user/game/settings"} {
+	for _, key := range []string{"GET /api/user/game", "GET /api/user/game/rewards", "GET /api/user/game/rankings", "POST /api/user/game/start", "POST /api/user/game/input", "PUT /api/user/game/settings", "GET /api/user/game/match3", "POST /api/user/game/match3/start", "POST /api/user/game/match3/input", "GET /api/user/game/match3/rankings", "POST /api/user/game/pvp/input", "DELETE /api/user/game/pvp/friendly"} {
 		rule, ok := middleware.AccessTokenRouteRule(key)
 		require.True(t, ok, key)
 		assert.Equal(t, "session", rule.Kind(), "game routes must reject personal access tokens: %s", key)

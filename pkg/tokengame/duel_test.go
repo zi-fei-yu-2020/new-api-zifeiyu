@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -203,27 +204,90 @@ func TestAdvanceDuelFillsMissingInputsNeutrally(t *testing.T) {
 	require.Equal(t, manual, advanced)
 }
 
+// duel-replays.json holds version 1 matches that must keep simulating with the
+// original rules; duel-replays-v2.json holds the current version.
 func TestDuelReplayCompatibility(t *testing.T) {
-	raw, err := os.ReadFile("testdata/duel-replays.json")
-	require.NoError(t, err)
-	var fixtures []struct {
-		Seed    uint32
-		Inputs1 []int
-		Inputs2 []int
-		State   DuelState
-	}
-	require.NoError(t, common.Unmarshal(raw, &fixtures))
-	require.GreaterOrEqual(t, len(fixtures), 3)
-	for _, fixture := range fixtures {
-		state := NewDuel(fixture.Seed)
-		require.Equal(t, len(fixture.Inputs1), len(fixture.Inputs2), "duel inputs must stay tick-aligned")
-		for tick := range fixture.Inputs1 {
-			require.True(t, ValidInput(fixture.Inputs1[tick]))
-			require.True(t, ValidInput(fixture.Inputs2[tick]))
-			state.Step(fixture.Inputs1[tick], fixture.Inputs2[tick])
+	for file, version := range map[string]int{"testdata/duel-replays.json": 1, "testdata/duel-replays-v2.json": 2} {
+		raw, err := os.ReadFile(file)
+		require.NoError(t, err)
+		var fixtures []struct {
+			Seed    uint32
+			Inputs1 []int
+			Inputs2 []int
+			State   DuelState
 		}
-		require.Equal(t, fixture.State, state)
+		require.NoError(t, common.Unmarshal(raw, &fixtures))
+		require.GreaterOrEqual(t, len(fixtures), 3)
+		for _, fixture := range fixtures {
+			require.Equal(t, version, fixture.State.Version)
+			state := NewDuelVersion(fixture.Seed, fixture.State.Version)
+			require.Equal(t, len(fixture.Inputs1), len(fixture.Inputs2), "duel inputs must stay tick-aligned")
+			for tick := range fixture.Inputs1 {
+				require.True(t, ValidInput(fixture.Inputs1[tick]))
+				require.True(t, ValidInput(fixture.Inputs2[tick]))
+				state.Step(fixture.Inputs1[tick], fixture.Inputs2[tick])
+			}
+			require.Equal(t, fixture.State, state)
+		}
 	}
+}
+
+func TestDuelRandomVersionsKeepLegacyStreamAndFixLowBitBias(t *testing.T) {
+	legacy, current := NewDuelVersion(42, 1), NewDuel(42)
+	require.Equal(t, DuelVersion, current.Version)
+	rng := uint32(42)
+	for range 8 {
+		rng = rng*1664525 + 1013904223
+		assert.Equal(t, int(rng%4), legacy.random(4))
+	}
+	var legacyEdges, edges []int
+	for range 64 {
+		legacyEdges = append(legacyEdges, legacy.random(4))
+		edges = append(edges, current.random(4))
+	}
+	assert.Equal(t, legacyEdges[:4], legacyEdges[4:8], "version 1 low bits cycle")
+	assert.NotEqual(t, edges[:4], edges[4:8])
+}
+
+func TestDuelTokenPickupDoesNotDependOnSlotOrder(t *testing.T) {
+	setup := func(version int, tick int) DuelState {
+		state := NewDuelVersion(42, version)
+		state.Tick = tick
+		state.Players[0].X, state.Players[0].Y = 4000, 3500
+		state.Players[1].X, state.Players[1].Y = 4600, 3500
+		return state
+	}
+	// Player two is strictly nearer: version 2 gives it the token even though
+	// player one can also reach it; version 1 keeps the slot-one-first rule.
+	state := setup(2, 10)
+	state.Tokens = []DuelToken{{X: 4400, Y: 3500, Value: 10}}
+	state.duelCollectTokens()
+	assert.Equal(t, 10, state.Players[1].Collected)
+	assert.Zero(t, state.Players[0].Collected)
+	assert.Empty(t, state.Tokens)
+	legacy := setup(1, 10)
+	legacy.Tokens = []DuelToken{{X: 4400, Y: 3500, Value: 10}}
+	legacy.duelCollectTokens()
+	assert.Equal(t, 10, legacy.Players[0].Collected)
+	assert.Zero(t, legacy.Players[1].Collected)
+
+	// Exact ties alternate by tick instead of always favouring player one.
+	for tick, winner := range map[int]int{10: 0, 11: 1} {
+		state = setup(2, tick)
+		state.Tokens = []DuelToken{{X: 4300, Y: 3500, Value: 10}}
+		state.duelCollectTokens()
+		assert.Equal(t, 10, state.Players[winner].Collected, "tick %d", tick)
+		assert.Zero(t, state.Players[1-winner].Collected)
+	}
+
+	// An out-of-reach token is pulled by the nearest player only, not by both
+	// in turn: it moves 220 toward player two and never toward player one.
+	state = setup(2, 10)
+	state.Players[1].X = 4600
+	state.Tokens = []DuelToken{{X: 5400, Y: 3500, Value: 10}}
+	state.duelCollectTokens()
+	require.Len(t, state.Tokens, 1)
+	assert.Equal(t, 5400-220, state.Tokens[0].X)
 }
 
 // A defensive autopilot: flee the nearest threats, keep clear of the other
@@ -292,10 +356,11 @@ func duelClone(state DuelState) DuelState {
 	return clone
 }
 
-// Regenerate the parity fixtures: WRITE_DUEL_FIXTURES=1 go test ./pkg/tokengame -run TestDuelWriteFixtures
+// Regenerate the current-version parity fixtures (duel-replays.json keeps the
+// frozen version 1 matches): WRITE_DUEL_FIXTURES=1 go test ./pkg/tokengame -run TestDuelWriteFixtures
 func TestDuelWriteFixtures(t *testing.T) {
 	if os.Getenv("WRITE_DUEL_FIXTURES") == "" {
-		t.Skip("set WRITE_DUEL_FIXTURES=1 to regenerate duel-replays.json")
+		t.Skip("set WRITE_DUEL_FIXTURES=1 to regenerate duel-replays-v2.json")
 	}
 	type fixture struct {
 		Seed    uint32    `json:"seed"`
@@ -344,5 +409,5 @@ func TestDuelWriteFixtures(t *testing.T) {
 	fixtures = append(fixtures, *timeout)
 	raw, err := common.Marshal(fixtures)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile("testdata/duel-replays.json", raw, 0o644))
+	require.NoError(t, os.WriteFile("testdata/duel-replays-v2.json", raw, 0o644))
 }

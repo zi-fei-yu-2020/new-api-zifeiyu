@@ -20,7 +20,10 @@ func SetApiRouter(router *gin.Engine) {
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
 	apiRouter.Use(middleware.AccessTokenAudit())
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
-	apiRouter.Use(middleware.GlobalAPIRateLimit())
+	// Duel input sync (~1.7 req/s per player) would exhaust the default per-IP
+	// budget for two players behind one NAT, so it gets a roomier IP bucket and
+	// a per-user limiter on the route itself.
+	apiRouter.Use(middleware.GlobalAPIRateLimitWithRelaxedRoute(http.MethodPost, "/api/user/game/pvp/input", 10))
 	anonymousRequestBodyLimit := middleware.AnonymousRequestBodyLimit()
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
@@ -150,18 +153,25 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/game/rewards", middleware.DisableCache(), controller.GetGameRewards)
 				selfRoute.GET("/game/rankings", middleware.DisableCache(), controller.GetGameRankings)
 				selfRoute.POST("/game/start", middleware.UserCriticalRateLimit("game-start"), controller.StartGame)
-				selfRoute.POST("/game/input", controller.AdvanceGame)
+				selfRoute.POST("/game/input", middleware.UserRateLimit("game-input", 240, 60), controller.AdvanceGame)
 				selfRoute.GET("/game/settings", middleware.RootAuth(), middleware.DisableCache(), controller.GetGameSettings)
 				selfRoute.PUT("/game/settings", middleware.RootAuth(), controller.UpdateGameSettings)
+
+				// Tile game runs are replayed server-side from client inputs.
+				selfRoute.GET("/game/match3", middleware.DisableCache(), controller.GetMatchStatus)
+				selfRoute.POST("/game/match3/start", middleware.UserCriticalRateLimit("match3-start"), controller.StartMatch)
+				selfRoute.POST("/game/match3/input", middleware.UserRateLimit("match3-input", 120, 60), controller.AdvanceMatch)
+				selfRoute.GET("/game/match3/rankings", middleware.DisableCache(), controller.GetMatchRankings)
 
 				// 1v1 PvP duels share the authenticated user boundary of the daily game.
 				selfRoute.GET("/game/pvp/status", middleware.DisableCache(), controller.GetPvPStatus)
 				selfRoute.POST("/game/pvp/queue", middleware.UserCriticalRateLimit("pvp-queue"), controller.JoinPvPQueue)
 				selfRoute.DELETE("/game/pvp/queue", controller.LeavePvPQueue)
 				selfRoute.GET("/game/pvp/match", middleware.DisableCache(), controller.GetPvPMatch)
-				selfRoute.POST("/game/pvp/input", controller.SubmitPvPInput)
+				selfRoute.POST("/game/pvp/input", middleware.UserRateLimit("pvp-input", 900, 60), controller.SubmitPvPInput)
 				selfRoute.POST("/game/pvp/friendly/create", middleware.UserCriticalRateLimit("pvp-friendly"), controller.CreatePvPFriendly)
 				selfRoute.POST("/game/pvp/friendly/join", middleware.UserCriticalRateLimit("pvp-friendly"), controller.JoinPvPFriendly)
+				selfRoute.DELETE("/game/pvp/friendly", middleware.UserCriticalRateLimit("pvp-friendly-cancel"), controller.CancelPvPFriendly)
 				selfRoute.GET("/game/pvp/matches", middleware.DisableCache(), controller.ListPvPMatches)
 				selfRoute.GET("/game/pvp/matches/:id/replay", middleware.DisableCache(), controller.GetPvPReplay)
 

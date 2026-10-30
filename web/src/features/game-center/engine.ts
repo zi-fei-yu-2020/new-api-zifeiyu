@@ -59,7 +59,7 @@ export type GameState = {
   enemies: Enemy[]
   tokens: Token[]
 }
-export function newGame(seed: number, version = 3): GameState {
+export function newGame(seed: number, version = 4): GameState {
   return {
     version,
     ...(version >= 2 ? { clock_tick: 0, pause_ticks: 0 } : {}),
@@ -100,6 +100,8 @@ const directions = [
 ]
 function random(s: GameState, n: number) {
   s.rng = (Math.imul(s.rng, 1664525) + 1013904223) >>> 0
+  // Version 4 scales the high bits; the low bits of a power-of-two LCG cycle.
+  if (s.version >= 4) return Math.floor((s.rng * n) / 4294967296)
   return s.rng % n
 }
 export function gameDuration(s: GameState) {

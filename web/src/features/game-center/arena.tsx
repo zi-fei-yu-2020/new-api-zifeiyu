@@ -198,12 +198,30 @@ export function Arena({
         [6, 5, 4],
       ][y + 1][x + 1]
     }
+    const release = () => {
+      keys.clear()
+      input.current.direction = 0
+      input.current.dash = false
+      input.current.upgrade = 0
+    }
     const down = (e: KeyboardEvent) => {
+      const target = e.target instanceof Element ? e.target : null
+      if (target?.closest('input,textarea,select,[contenteditable="true"]')) {
+        return
+      }
+      // Space and Enter activate a focused button or link; the movement keys
+      // stay live so a clicked upgrade button does not freeze the player.
       if (
-        (e.target as HTMLElement).closest(
-          'input,textarea,select,[contenteditable="true"]'
-        )
+        (e.key === ' ' || e.key === 'Enter') &&
+        target?.closest('button,a,summary,[role="button"]')
       ) {
+        return
+      }
+      // Browser and OS shortcuts (Cmd+1, Ctrl+S, Alt+Arrow) belong to the
+      // user, and the keyup of a key pressed under Cmd is never delivered, so
+      // a modifier combo releases every held movement key instead.
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        release()
         return
       }
       const key = e.key.toLowerCase()
@@ -234,18 +252,19 @@ export function Arena({
       keys.delete(e.key.toLowerCase())
       update()
     }
-    const blur = () => {
-      keys.clear()
-      input.current.direction = 0
+    const hide = () => {
+      if (document.hidden) release()
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
-    window.addEventListener('blur', blur)
+    window.addEventListener('blur', release)
+    document.addEventListener('visibilitychange', hide)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
-      window.removeEventListener('blur', blur)
-      blur()
+      window.removeEventListener('blur', release)
+      document.removeEventListener('visibilitychange', hide)
+      release()
     }
   }, [active, controlsDisabled, input])
   return (

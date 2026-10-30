@@ -87,6 +87,7 @@ export type PvPReplay = {
   inputs: DuelInputBatch[]
   started_at: number
   finished_at: number
+  version?: number
 }
 
 type Envelope<T> = { success: boolean; data: T; message?: string }
@@ -98,13 +99,91 @@ function unwrap<T>(response: Envelope<T>): T {
   return response.data
 }
 
+// Browsers expose crypto.subtle only on secure origins, so a plain-HTTP
+// deployment has no WebCrypto. The small SHA-256/HMAC below keeps input signing
+// (and with it every staked duel) working there; the native path is preferred.
+const sha256Primes: number[] = []
+for (let n = 2; sha256Primes.length < 64; n++) {
+  if (sha256Primes.every((prime) => n % prime !== 0)) sha256Primes.push(n)
+}
+const fractionBits = (value: number) =>
+  Math.floor((value - Math.floor(value)) * 2 ** 32)
+const sha256K = sha256Primes.map((prime) => fractionBits(Math.cbrt(prime)))
+const sha256H = sha256Primes
+  .slice(0, 8)
+  .map((prime) => fractionBits(Math.sqrt(prime)))
+const rotr = (value: number, bits: number) =>
+  (value >>> bits) | (value << (32 - bits))
+
+function sha256(data: Uint8Array): Uint8Array {
+  const padded = new Uint8Array(((data.length + 9 + 63) >> 6) << 6)
+  padded.set(data)
+  padded[data.length] = 0x80
+  const view = new DataView(padded.buffer)
+  const bitLength = data.length * 8
+  view.setUint32(padded.length - 8, Math.floor(bitLength / 2 ** 32))
+  view.setUint32(padded.length - 4, bitLength >>> 0)
+  const hash = Uint32Array.from(sha256H)
+  const w = new Uint32Array(64)
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4)
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10)
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1
+    }
+    let [a, b, c, d, e, f, g, h] = hash
+    for (let i = 0; i < 64; i++) {
+      const t1 =
+        (h +
+          (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) +
+          ((e & f) ^ (~e & g)) +
+          sha256K[i] +
+          w[i]) |
+        0
+      const t2 =
+        ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) +
+          ((a & b) ^ (a & c) ^ (b & c))) |
+        0
+      h = g
+      g = f
+      f = e
+      e = (d + t1) | 0
+      d = c
+      c = b
+      b = a
+      a = (t1 + t2) | 0
+    }
+    const round = [a, b, c, d, e, f, g, h]
+    for (let i = 0; i < 8; i++) hash[i] += round[i]
+  }
+  const out = new Uint8Array(32)
+  const outView = new DataView(out.buffer)
+  hash.forEach((word, i) => outView.setUint32(i * 4, word))
+  return out
+}
+
+function hmacSha256(key: Uint8Array, message: Uint8Array): Uint8Array {
+  const block = key.length > 64 ? sha256(key) : key
+  const inner = new Uint8Array(64 + message.length)
+  const outer = new Uint8Array(96)
+  for (let i = 0; i < 64; i++) {
+    inner[i] = (block[i] ?? 0) ^ 0x36
+    outer[i] = (block[i] ?? 0) ^ 0x5c
+  }
+  inner.set(message, 64)
+  outer.set(sha256(inner), 64)
+  return sha256(outer)
+}
+
 // The signature key is imported once per secret and cached as a promise, so
-// every synchronization batch only awaits the HMAC itself.
+// every synchronization batch only awaits the HMAC itself. A rejected import
+// is evicted so a later batch can retry instead of replaying the failure.
 const duelKeys = new Map<string, Promise<CryptoKey>>()
-function importDuelKey(secret: string) {
+function importDuelKey(subtle: SubtleCrypto, secret: string) {
   let key = duelKeys.get(secret)
   if (!key) {
-    key = crypto.subtle.importKey(
+    key = subtle.importKey(
       'raw',
       new TextEncoder().encode(secret),
       { name: 'HMAC', hash: 'SHA-256' },
@@ -112,14 +191,17 @@ function importDuelKey(secret: string) {
       ['sign']
     )
     duelKeys.set(secret, key)
+    key.catch(() => {
+      if (duelKeys.get(secret) === key) duelKeys.delete(secret)
+    })
   }
   return key
 }
 
-function toHex(buffer: ArrayBuffer) {
-  return Array.from(new Uint8Array(buffer), (byte) =>
-    byte.toString(16).padStart(2, '0')
-  ).join('')
+function toHex(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
+    ''
+  )
 }
 
 // Mirrors model/pvp.go pvpSignature: the tag covers every field the server
@@ -133,14 +215,19 @@ export async function signPvPInput(
   quit: boolean,
   inputs: number[]
 ) {
-  const message = `pvp1|${matchId}|${slot}|${seq}|${from}|${quit ? 1 : 0}|${inputs.join(',')}`
-  const key = await importDuelKey(secret)
-  const mac = await crypto.subtle.sign(
-    'HMAC',
-    key,
-    new TextEncoder().encode(message)
+  const message = new TextEncoder().encode(
+    `pvp1|${matchId}|${slot}|${seq}|${from}|${quit ? 1 : 0}|${inputs.join(',')}`
   )
-  return toHex(mac)
+  const subtle = globalThis.crypto?.subtle
+  if (subtle) {
+    try {
+      const key = await importDuelKey(subtle, secret)
+      return toHex(new Uint8Array(await subtle.sign('HMAC', key, message)))
+    } catch {
+      // Fall through to the portable implementation below.
+    }
+  }
+  return toHex(hmacSha256(new TextEncoder().encode(secret), message))
 }
 
 export const getPvPStatus = (signal?: AbortSignal) =>
