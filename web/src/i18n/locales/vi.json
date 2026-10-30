@@ -8029,6 +8029,7 @@
     "PvP duels": "Đấu PvP",
     "PvP duels are currently disabled": "Đấu PvP hiện đang bị tắt",
     "PvP input rejected. Refresh the duel and retry": "Đầu vào PvP bị từ chối. Tải lại trận đấu và thử lại",
+    "PvP invite code has expired": "Mã mời PvP đã hết hạn",
     "PvP match history": "Lịch sử đấu PvP",
     "PvP match not found": "Không tìm thấy trận PvP",
     "PvP replay is only available after the duel finishes": "Bản phát lại PvP chỉ khả dụng sau khi trận đấu kết thúc",
@@ -8066,6 +8067,14 @@
     "Your score": "Điểm của bạn",
     "duels": "trận",
     "vs {{name}} (red)": "đấu với {{name}} (đỏ)",
-    "{{name}} (blue)": "{{name}} (xanh)"
+    "{{name}} (blue)": "{{name}} (xanh)",
+    "Deleted account": "Tài khoản đã xóa",
+    "PvP stake locked: {{quota}}": "Đã khóa tiền cược PvP: {{quota}}",
+    "Unable to cancel the friendly duel": "Không thể hủy trận đấu giao hữu",
+    "Unable to refresh PvP status. Showing the last known data.": "Không thể làm mới trạng thái PvP. Đang hiển thị dữ liệu gần nhất.",
+    "Cancel invite": "Hủy lời mời",
+    "Invite cancelled": "Đã hủy lời mời",
+    "Get ready. The duel starts in {{seconds}}s": "Chuẩn bị. Trận đấu bắt đầu sau {{seconds}} giây",
+    "A capped daily budget must cover at least the maximum reward for one run": "Ngân sách hằng ngày có giới hạn phải bao phủ ít nhất phần thưởng tối đa của một lượt chơi"
   }
 }

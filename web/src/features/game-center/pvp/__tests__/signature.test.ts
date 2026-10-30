@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createHmac } from 'node:crypto'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { signPvPInput } from '../api'
 
@@ -81,5 +81,44 @@ describe('PvP input packet signature', () => {
     const tamperedInput = await signPvPInput('secret', 'm', 1, 1, 0, false, [2])
     expect(replayedSeq).not.toBe(base)
     expect(tamperedInput).not.toBe(base)
+  })
+})
+
+describe('PvP input signature without WebCrypto', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('signs on plain-HTTP origins where crypto.subtle is missing', async () => {
+    vi.stubGlobal('crypto', {})
+    const sig = await signPvPInput('plain-http', 'm-1', 2, 5, 40, false, [1, 2])
+    expect(sig).toBe(
+      serverSideSignature('plain-http', 'm-1', 2, 5, 40, 0, [1, 2])
+    )
+  })
+
+  it.each([
+    ['short secret', 'k'],
+    ['block-sized secret', 'k'.repeat(64)],
+    ['secret longer than one SHA-256 block', 'long-secret-'.repeat(12)],
+    ['non-ASCII secret', '密钥-secret'],
+  ])('matches the server HMAC for a %s', async (_name, secret) => {
+    vi.stubGlobal('crypto', undefined)
+    const inputs = Array.from({ length: 300 }, (_, i) => i % 128)
+    const sig = await signPvPInput(secret, 'match-long', 1, 9, 0, true, inputs)
+    expect(sig).toBe(
+      serverSideSignature(secret, 'match-long', 1, 9, 0, 1, inputs)
+    )
+  })
+
+  it('falls back to the portable HMAC and retries the import after a rejected key', async () => {
+    const importKey = vi.fn().mockRejectedValue(new Error('import failed'))
+    vi.stubGlobal('crypto', { subtle: { importKey, sign: vi.fn() } })
+    const first = await signPvPInput('flaky', 'm', 1, 1, 0, false, [3])
+    const second = await signPvPInput('flaky', 'm', 1, 2, 1, false, [3])
+    expect(first).toBe(serverSideSignature('flaky', 'm', 1, 1, 0, 0, [3]))
+    expect(second).toBe(serverSideSignature('flaky', 'm', 1, 2, 1, 0, [3]))
+    // The rejected promise is evicted, so each batch tries the import again.
+    expect(importKey).toHaveBeenCalledTimes(2)
   })
 })

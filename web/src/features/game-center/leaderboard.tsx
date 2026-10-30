@@ -34,6 +34,7 @@ export function Leaderboard(props: { weeklyPrizes: number[] }) {
     queryKey: ['game-rankings', period],
     queryFn: () => getRankings(period),
     refetchInterval: 30000,
+    meta: { errorToast: false },
   })
   const myRank = ranks.data?.find((row) => row.is_me)
   let content = (

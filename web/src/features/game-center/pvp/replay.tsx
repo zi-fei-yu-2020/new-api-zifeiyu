@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { Pause, Play, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -29,6 +29,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { getPvPReplay } from './api'
 import { DuelArena } from './duel-arena'
 import {
+  createDuelReplayCursor,
   DUEL_DURATION,
   DUEL_TICK_MS,
   newDuel,
@@ -42,51 +43,86 @@ type Props = { matchId: string; onClose: () => void }
 
 // The replay viewer rebuilds the duel from the recorded batches with the same
 // deterministic engine, replaying them in the server's arrival order so the
-// rebuilt outcome matches the settled result; scrubbing just re-runs the
-// simulation up to the requested tick.
+// rebuilt outcome matches the settled result. A replay cursor advances ordinary
+// forward playback incrementally and falls back to full replay for scrubbing.
 export function DuelReplay({ matchId, onClose }: Props) {
   const { t } = useTranslation()
   const replay = useQuery({
     queryKey: ['pvp-replay', matchId],
     queryFn: ({ signal }) => getPvPReplay(matchId, signal),
+    meta: { errorToast: false },
   })
   const userId = useAuthStore((state) => state.auth.user?.id)
   const [speed, setSpeed] = useState(1)
   const [playing, setPlaying] = useState(false)
   const [tick, setTick] = useState(0)
   const state = useRef<DuelState>(newDuel(0))
-
-  const seek = useCallback(
-    (target: number) => {
-      if (!replay.data) return
-      const next = replayDuelTo(
-        replay.data.seed,
-        replay.data.started_at,
-        replay.data.inputs,
-        target
-      )
-      state.current = next
-      setTick(next.tick)
-    },
+  const cursor = useMemo(
+    () =>
+      replay.data
+        ? createDuelReplayCursor(
+            replay.data.seed,
+            replay.data.started_at,
+            replay.data.inputs,
+            replay.data.version
+          )
+        : null,
     [replay.data]
   )
 
+  // A KO ends the duel before DUEL_DURATION. The slider and playback stop at
+  // that settled tick, so the thumb is never dragged to a position the replay
+  // cannot reach and then snapped back.
+  const endTick = useMemo(
+    () =>
+      replay.data
+        ? replayDuelTo(
+            replay.data.seed,
+            replay.data.started_at,
+            replay.data.inputs,
+            DUEL_DURATION,
+            replay.data.version
+          ).tick
+        : DUEL_DURATION,
+    [replay.data]
+  )
+
+  const seek = useCallback(
+    (target: number) => {
+      if (!cursor) return
+      const next = cursor(Math.max(0, Math.min(target, endTick)))
+      state.current = next
+      setTick(next.tick)
+    },
+    [cursor, endTick]
+  )
+
   useEffect(() => {
-    if (replay.data) seek(0)
-  }, [replay.data, seek])
+    if (cursor) seek(0)
+  }, [cursor, seek])
 
   useEffect(() => {
     if (!playing || !replay.data) return
     const timer = window.setInterval(() => {
       const current = state.current
-      if (current.finished) {
+      if (current.finished || current.tick >= endTick) {
         setPlaying(false)
         return
       }
       seek(current.tick + 1)
     }, DUEL_TICK_MS / speed)
     return () => clearInterval(timer)
-  }, [playing, speed, replay.data, seek])
+  }, [playing, speed, replay.data, seek, endTick])
+
+  const togglePlaying = () => {
+    if (playing) {
+      setPlaying(false)
+      return
+    }
+    // Playing from the final frame starts the replay over.
+    if (state.current.finished || tick >= endTick) seek(0)
+    setPlaying(true)
+  }
 
   if (replay.isError) {
     return (
@@ -112,16 +148,18 @@ export function DuelReplay({ matchId, onClose }: Props) {
   const opponent = world.players[mySlot === 1 ? 1 : 0]
   const youInfo = replay.data.players[mySlot - 1]
   const opponentInfo = replay.data.players[mySlot === 1 ? 1 : 0]
+  const playerName = (name: string | undefined) =>
+    name === 'Deleted account' ? t('Deleted account') : (name ?? '—')
   const seconds = Math.ceil((DUEL_DURATION - tick) / 10)
   return (
     <section className='bg-card border' aria-label={t('PvP duel replay')}>
       <div className='flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 sm:px-5'>
         <div className='flex items-center gap-3 text-sm'>
           <span className='font-medium'>
-            {t('{{name}} (blue)', { name: youInfo?.name ?? '—' })}
+            {t('{{name}} (blue)', { name: playerName(youInfo?.name) })}
           </span>
           <span className='text-muted-foreground'>
-            {t('vs {{name}} (red)', { name: opponentInfo?.name ?? '—' })}
+            {t('vs {{name}} (red)', { name: playerName(opponentInfo?.name) })}
           </span>
         </div>
         <div className='flex items-center gap-3 text-sm'>
@@ -168,7 +206,7 @@ export function DuelReplay({ matchId, onClose }: Props) {
           variant='outline'
           size='sm'
           aria-label={playing ? t('Pause') : t('Play')}
-          onClick={() => setPlaying((value) => !value)}
+          onClick={togglePlaying}
         >
           {playing ? <Pause className='size-4' /> : <Play className='size-4' />}
         </Button>
@@ -196,7 +234,7 @@ export function DuelReplay({ matchId, onClose }: Props) {
               seek(Array.isArray(value) ? value[0] : value)
             }
             min={0}
-            max={DUEL_DURATION}
+            max={Math.max(endTick, 1)}
             aria-label={t('Replay position')}
           />
         </div>

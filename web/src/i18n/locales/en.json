@@ -8029,6 +8029,7 @@
     "PvP duels": "PvP duels",
     "PvP duels are currently disabled": "PvP duels are currently disabled",
     "PvP input rejected. Refresh the duel and retry": "PvP input rejected. Refresh the duel and retry",
+    "PvP invite code has expired": "PvP invite code has expired",
     "PvP match history": "PvP match history",
     "PvP match not found": "PvP match not found",
     "PvP replay is only available after the duel finishes": "PvP replay is only available after the duel finishes",
@@ -8066,6 +8067,14 @@
     "Your score": "Your score",
     "duels": "duels",
     "vs {{name}} (red)": "vs {{name}} (red)",
-    "{{name}} (blue)": "{{name}} (blue)"
+    "{{name}} (blue)": "{{name}} (blue)",
+    "Deleted account": "Deleted account",
+    "PvP stake locked: {{quota}}": "PvP stake locked: {{quota}}",
+    "Unable to cancel the friendly duel": "Unable to cancel the friendly duel",
+    "Unable to refresh PvP status. Showing the last known data.": "Unable to refresh PvP status. Showing the last known data.",
+    "Cancel invite": "Cancel invite",
+    "Invite cancelled": "Invite cancelled",
+    "Get ready. The duel starts in {{seconds}}s": "Get ready. The duel starts in {{seconds}}s",
+    "A capped daily budget must cover at least the maximum reward for one run": "A capped daily budget must cover at least the maximum reward for one run"
   }
 }

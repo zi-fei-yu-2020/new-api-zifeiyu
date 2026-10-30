@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -289,4 +290,111 @@ func TestGlobalWebRateLimitCountsFrontendFilesInStaticBucket(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "1", webCount)
 	})
+}
+
+func TestGlobalAPIRateLimitWithRelaxedRouteKeepsDuelInputAlive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	redisServer, _ := useRateLimitMiniRedis(t)
+	previousEnable, previousNum, previousDuration := common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration
+	t.Cleanup(func() {
+		common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration = previousEnable, previousNum, previousDuration
+	})
+	common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration = true, 2, 60
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.Use(GlobalAPIRateLimitWithRelaxedRoute(http.MethodPost, "/api/user/game/pvp/input", 3))
+	router.GET("/api/user/game/pvp/status", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router.POST("/api/user/game/pvp/input", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	const clientIP = "192.0.2.80"
+	remoteAddr := clientIP + ":12345"
+	send := func(method, path string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(method, path, nil)
+		request.RemoteAddr = remoteAddr
+		router.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	// Ordinary dashboard polling exhausts the shared per-IP budget.
+	assert.Equal(t, http.StatusNoContent, send(http.MethodGet, "/api/user/game/pvp/status").Code)
+	assert.Equal(t, http.StatusNoContent, send(http.MethodGet, "/api/user/game/pvp/status").Code)
+	assert.Equal(t, http.StatusTooManyRequests, send(http.MethodGet, "/api/user/game/pvp/status").Code)
+
+	// Duel input on the same IP keeps its own budget, relaxed by the factor.
+	for range 6 {
+		assert.Equal(t, http.StatusNoContent, send(http.MethodPost, "/api/user/game/pvp/input").Code)
+	}
+	assert.Equal(t, http.StatusTooManyRequests, send(http.MethodPost, "/api/user/game/pvp/input").Code)
+
+	relaxedCount, err := redisServer.Get(redisIPRateLimitKey("GAR", clientIP))
+	require.NoError(t, err)
+	assert.Equal(t, "7", relaxedCount)
+	sharedCount, err := redisServer.Get(redisIPRateLimitKey("GA", clientIP))
+	require.NoError(t, err)
+	assert.Equal(t, "3", sharedCount, "duel input must not consume the shared bucket")
+}
+
+// TestGameRateLimitsAgainstRealRedis runs the duel input limiters against a
+// real Redis server, so the fixed-window Lua script is verified where it
+// actually runs. Set TEST_REDIS_ADDR (for example 127.0.0.1:6379) to enable it.
+func TestGameRateLimitsAgainstRealRedis(t *testing.T) {
+	addr := os.Getenv("TEST_REDIS_ADDR")
+	if addr == "" {
+		t.Skip("TEST_REDIS_ADDR is not configured")
+	}
+	gin.SetMode(gin.TestMode)
+	previousRedisEnabled, previousRedisClient := common.RedisEnabled, common.RDB
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	require.NoError(t, client.Ping(context.Background()).Err())
+	common.RedisEnabled, common.RDB = true, client
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled, common.RDB = previousRedisEnabled, previousRedisClient
+	})
+
+	previousEnable, previousNum, previousDuration := common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration
+	t.Cleanup(func() {
+		common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration = previousEnable, previousNum, previousDuration
+	})
+	common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration = true, 2, 60
+
+	const clientIP = "192.0.2.90"
+	keys := []string{redisIPRateLimitKey("GA", clientIP), redisIPRateLimitKey("GAR", clientIP)}
+	for _, userID := range []int{71, 72} {
+		keys = append(keys, redisUserRateLimitKey("UR:pvp-input", userID))
+	}
+	require.NoError(t, client.Del(context.Background(), keys...).Err())
+	t.Cleanup(func() { _ = client.Del(context.Background(), keys...).Err() })
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.Use(GlobalAPIRateLimitWithRelaxedRoute(http.MethodPost, "/api/user/game/pvp/input", 3))
+	router.POST("/api/user/game/pvp/input",
+		func(c *gin.Context) {
+			userID, err := strconv.Atoi(c.GetHeader("X-Test-User"))
+			require.NoError(t, err)
+			c.Set("id", userID)
+		},
+		UserRateLimit("pvp-input", 4, 60),
+		func(c *gin.Context) { c.Status(http.StatusNoContent) },
+	)
+
+	send := func(userID int) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/user/game/pvp/input", nil)
+		request.RemoteAddr = clientIP + ":12345"
+		request.Header.Set("X-Test-User", strconv.Itoa(userID))
+		router.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	// The per-user ceiling binds before the relaxed per-IP budget does.
+	for range 4 {
+		assert.Equal(t, http.StatusNoContent, send(71).Code)
+	}
+	assert.Equal(t, http.StatusTooManyRequests, send(71).Code)
+	// A second player behind the same IP still gets their own budget.
+	assert.Equal(t, http.StatusNoContent, send(72).Code)
 }

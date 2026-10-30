@@ -258,3 +258,42 @@ it('flushes recorded inputs before recovering the clock after returning to the t
   })
   expect(status).toHaveBeenCalledTimes(1)
 })
+
+it('resigns after a cursor mismatch forced recovery instead of stalling', async () => {
+  const initial = playableRun()
+  const behind = checkpoint(initial, [])
+  const abandoned = { ...checkpoint(initial, []), status: 'abandoned' as const }
+  const send = vi
+    .spyOn(gameApi, 'sendInputs')
+    .mockImplementation(async (_id, _from, inputs, quit) =>
+      quit ? abandoned : checkpoint(initial, inputs)
+    )
+    .mockImplementationOnce(async (_id, _from, inputs) =>
+      checkpoint(initial, inputs)
+    )
+    .mockImplementationOnce(async () => behind)
+  const status = vi
+    .spyOn(gameApi, 'getGameStatus')
+    .mockResolvedValue({ run: behind } as Awaited<
+      ReturnType<typeof gameApi.getGameStatus>
+    >)
+  const finished = vi.fn()
+  const { result } = renderHook(() => useGameSession(finished))
+  act(() => {
+    result.current.install(initial)
+    result.current.input.current.direction = 3
+  })
+  // The second synchronization is acknowledged behind the local cursor, which
+  // drops the queue and asks for a recovery round.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4100)
+  })
+  expect(status).not.toHaveBeenCalled()
+  await act(async () => {
+    await result.current.quit()
+  })
+  expect(status).toHaveBeenCalledOnce()
+  expect(send.mock.calls.at(-1)?.[3]).toBe(true)
+  expect(result.current.run?.status).toBe('abandoned')
+  expect(finished).toHaveBeenCalledTimes(1)
+})

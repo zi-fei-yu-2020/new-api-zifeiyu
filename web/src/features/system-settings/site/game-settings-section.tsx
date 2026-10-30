@@ -79,6 +79,21 @@ const schema = z
       parseQuotaFromDollars(Number(values.pvpMax)),
     { path: ['pvpMax'] }
   )
+  // The server rejects a positive daily cap that cannot reserve even one
+  // run's maximum reward while rewards are on; zero means no cap.
+  .refine(
+    (values) => {
+      if (!values.rewardsEnabled) return true
+      const budget = parseQuotaFromDollars(Number(values.dailyBudget))
+      if (budget <= 0) return true
+      return (
+        budget >=
+        parseQuotaFromDollars(Number(values.first)) +
+          128 * parseQuotaFromDollars(Number(values.additional))
+      )
+    },
+    { path: ['dailyBudget'] }
+  )
 type Values = z.infer<typeof schema>
 export function GameSettingsSection() {
   const { t } = useTranslation()
@@ -256,6 +271,13 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
                   'Zero means no total budget cap. A capped budget reserves the maximum reward before a run starts.'
                 )}
               </FieldDescription>
+              {form.formState.errors.dailyBudget ? (
+                <FieldDescription role='alert' className='text-destructive'>
+                  {t(
+                    'A capped daily budget must cover at least the maximum reward for one run'
+                  )}
+                </FieldDescription>
+              ) : null}
             </Field>
           </div>
           <div className='space-y-4 border-t pt-5'>

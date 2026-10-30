@@ -34,13 +34,17 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { getSelf } from '@/lib/api'
 import { formatNumber, formatQuota } from '@/lib/format'
-import { requireServerSuccess } from '@/lib/server-error-message'
+import {
+  getServerErrorSources,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { getGameRewards, getGameStatus, startGame } from './api'
+import { getGameRewards, startGame, type GameStatus } from './api'
 import { Arena } from './arena'
 import { gameDuration, upgradePending } from './engine'
 import { Leaderboard } from './leaderboard'
+import { gameStatusQueryOptions } from './query-options'
 import { UpgradePanel } from './upgrade-panel'
 import { useGameSession } from './use-game-session'
 import { WeeklyRewards } from './weekly-rewards'
@@ -56,16 +60,50 @@ function countdown(milliseconds: number) {
     .padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`
 }
 
-export function DailyChallenge() {
+// Owns the once-per-second tick so the rest of the page does not re-render
+// with it, and asks for a fresh status once per reset boundary (retrying only
+// slowly) instead of on every tick while the old day is still being served.
+const RESET_REFETCH_RETRY_MS = 15_000
+function ResetCountdown(props: {
+  serverTime?: number
+  updatedAt: number
+  resetsAt?: number
+  paused: boolean
+  onReset: () => void
+}) {
+  const [clock, setClock] = useState(Date.now())
+  const fired = useRef({ resetsAt: 0, at: 0 })
+  const onReset = useRef(props.onReset)
+  onReset.current = props.onReset
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  const serverTime = props.serverTime
+  const resetsAt = props.resetsAt
+  let resetIn = 0
+  if (serverTime !== undefined && resetsAt !== undefined) {
+    resetIn = resetsAt - (serverTime + (clock - props.updatedAt))
+  }
+  const hasStatus = resetsAt !== undefined
+  useEffect(() => {
+    if (!hasStatus || resetIn > 0 || props.paused) return
+    const last = fired.current
+    const now = Date.now()
+    if (last.resetsAt === resetsAt && now - last.at < RESET_REFETCH_RETRY_MS) {
+      return
+    }
+    fired.current = { resetsAt: resetsAt ?? 0, at: now }
+    onReset.current()
+  }, [hasStatus, resetIn, props.paused, resetsAt])
+  return <>{countdown(resetIn)}</>
+}
+
+export function DailyChallenge(props: { visible?: boolean }) {
+  const visible = props.visible ?? true
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const status = useQuery({
-    queryKey: ['game-status'],
-    queryFn: ({ signal }) => getGameStatus(signal),
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    staleTime: 0,
-  })
+  const status = useQuery(gameStatusQueryOptions)
   const rewards = useQuery({
     queryKey: ['game-rewards'],
     queryFn: getGameRewards,
@@ -93,7 +131,6 @@ export function DailyChallenge() {
   const { run, display, input, install } = session
   const { data: statusData, refetch: refetchStatus } = status
   const [confirm, setConfirm] = useState<'start' | 'quit' | null>(null)
-  const [clock, setClock] = useState(Date.now())
   const joystick = useRef<HTMLDivElement>(null)
   const arenaPanel = useRef<HTMLElement>(null)
   const [stick, setStick] = useState({ x: 0, y: 0 })
@@ -129,17 +166,33 @@ export function DailyChallenge() {
   const start = useMutation({
     mutationFn: startGame,
     onSuccess: (next) => {
+      queryClient.setQueryData<GameStatus>(['game-status'], (current) =>
+        current ? { ...current, run: next } : current
+      )
       session.install(next)
       setConfirm(null)
     },
     onError: (error: Error) => {
+      const sources = getServerErrorSources(error)
       if (
-        error.message === 'The daily reward budget cannot cover another run'
+        sources.some(
+          (source) =>
+            source.message_key ===
+              'The daily reward budget cannot cover another run' ||
+            source.message ===
+              'The daily reward budget cannot cover another run'
+        )
       ) {
         toast.error(t('The daily reward budget cannot cover another run'))
         return
       }
-      if (error.message === 'The daily challenge is currently closed') {
+      if (
+        sources.some(
+          (source) =>
+            source.message_key === 'The daily challenge is currently closed' ||
+            source.message === 'The daily challenge is currently closed'
+        )
+      ) {
         toast.error(t('The daily challenge is currently closed'))
         return
       }
@@ -149,17 +202,6 @@ export function DailyChallenge() {
   useEffect(() => {
     if (statusData) install(statusData.run)
   }, [statusData, install])
-  useEffect(() => {
-    const timer = setInterval(() => setClock(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
-  const serverClock = status.data
-    ? status.data.server_time + (clock - status.dataUpdatedAt)
-    : clock
-  const resetIn = status.data ? status.data.resets_at - serverClock : 0
-  useEffect(() => {
-    if (statusData && resetIn <= 0 && !active) void refetchStatus()
-  }, [resetIn, active, statusData, refetchStatus])
   const seconds = Math.max(
     0,
     Math.ceil((gameDuration(display) - display.tick) / 10)
@@ -262,7 +304,13 @@ export function DailyChallenge() {
               {t('Next daily challenge')}
             </p>
             <p className='mt-1 font-mono text-xl tabular-nums'>
-              {countdown(resetIn)}
+              <ResetCountdown
+                serverTime={statusData?.server_time}
+                updatedAt={status.dataUpdatedAt}
+                resetsAt={statusData?.resets_at}
+                paused={active}
+                onReset={() => void refetchStatus()}
+              />
             </p>
           </div>
           <span className='text-muted-foreground self-end pb-1 text-xs'>
@@ -357,7 +405,7 @@ export function DailyChallenge() {
             <Arena
               state={session.state}
               input={input}
-              active={!!run}
+              active={active && visible}
               controlsDisabled={!!canUpgrade}
             />
             {!active && (

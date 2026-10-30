@@ -8029,6 +8029,7 @@
     "PvP duels": "PvP デュエル",
     "PvP duels are currently disabled": "PvP デュエルは現在無効です",
     "PvP input rejected. Refresh the duel and retry": "PvP 入力が拒否されました。デュエルを更新して再試行してください",
+    "PvP invite code has expired": "PvP 招待コードの有効期限が切れました",
     "PvP match history": "PvP 対戦履歴",
     "PvP match not found": "PvP マッチが見つかりません",
     "PvP replay is only available after the duel finishes": "PvP リプレイはデュエル終了後にのみ閲覧できます",
@@ -8066,6 +8067,14 @@
     "Your score": "自分のスコア",
     "duels": "回",
     "vs {{name}} (red)": "vs {{name}}（赤）",
-    "{{name}} (blue)": "{{name}}（青）"
+    "{{name}} (blue)": "{{name}}（青）",
+    "Deleted account": "削除されたアカウント",
+    "PvP stake locked: {{quota}}": "PvP のステークを確保しました：{{quota}}",
+    "Unable to cancel the friendly duel": "フレンドデュエルをキャンセルできません",
+    "Unable to refresh PvP status. Showing the last known data.": "PvP の状態を更新できません。最後に取得したデータを表示しています。",
+    "Cancel invite": "招待をキャンセル",
+    "Invite cancelled": "招待をキャンセルしました",
+    "Get ready. The duel starts in {{seconds}}s": "準備してください。デュエルは {{seconds}} 秒後に開始します",
+    "A capped daily budget must cover at least the maximum reward for one run": "上限付きの日次予算は、1 回のプレイの最大報酬以上である必要があります"
   }
 }
