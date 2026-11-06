@@ -2,28 +2,38 @@ package controller
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
+
+// logGameError records the real cause server-side; responses stay generic.
+func logGameError(action string, err error) {
+	common.SysError(common.LogText("game center: failed to %s: %s", action, err.Error()))
+}
 
 func GetGameStatus(c *gin.Context) {
 	now := time.Now()
 	settings, err := model.GetGameSettings()
 	if err != nil {
+		logGameError("load game settings", err)
 		common.ApiErrorT(c, "Unable to load the daily challenge")
 		return
 	}
 	run, err := model.GetTodayGame(c.GetInt("id"), now)
 	if err != nil {
+		logGameError("load today's game", err)
 		common.ApiErrorT(c, "Unable to load the daily challenge")
 		return
 	}
 	budgets, err := model.GetGameBudgets(settings, now)
 	if err != nil {
+		logGameError("load game budgets", err)
 		common.ApiErrorT(c, "Unable to load the daily challenge")
 		return
 	}
@@ -38,6 +48,7 @@ func StartGame(c *gin.Context) {
 		} else if errors.Is(err, model.ErrGameClosed) {
 			common.ApiErrorT(c, "The daily challenge is currently closed")
 		} else {
+			logGameError("start a game", err)
 			common.ApiErrorT(c, "Unable to start the daily challenge. Please try again")
 		}
 		return
@@ -58,6 +69,9 @@ func AdvanceGame(c *gin.Context) {
 	}
 	run, err := model.AdvanceGame(c.GetInt("id"), body.ID, body.From, body.Inputs, body.Quit, time.Now())
 	if err != nil {
+		if !errors.Is(err, model.ErrGameInput) && !errors.Is(err, gorm.ErrRecordNotFound) {
+			logGameError("advance a game", err)
+		}
 		common.ApiErrorT(c, "Game progress is out of sync. Reconnect to continue the same run")
 		return
 	}
@@ -66,6 +80,7 @@ func AdvanceGame(c *gin.Context) {
 func GetGameRankings(c *gin.Context) {
 	rows, err := model.GetGameRanking(c.GetInt("id"), c.Query("period") == "week", time.Now())
 	if err != nil {
+		logGameError("load rankings", err)
 		common.ApiErrorT(c, "Unable to load rankings")
 		return
 	}
@@ -73,22 +88,27 @@ func GetGameRankings(c *gin.Context) {
 }
 func UpdateGameSettings(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
-	var settings model.GameSettings
-	if err := c.ShouldBindJSON(&settings); err != nil {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		common.ApiErrorT(c, "Invalid game reward settings")
 		return
 	}
-	settings.RewardVersion = 2
-	if err := model.SaveGameSettings(settings); err != nil {
+	// Omitted fields keep their stored value rather than resetting to zero.
+	stored, err := model.PatchGameSettings(body)
+	if err != nil {
+		if !errors.Is(err, model.ErrGameSettings) {
+			logGameError("save game settings", err)
+		}
 		common.ApiErrorT(c, "Invalid game reward settings")
 		return
 	}
-	common.ApiSuccess(c, settings)
+	common.ApiSuccess(c, stored)
 }
 
 func GetGameSettings(c *gin.Context) {
 	settings, err := model.GetGameSettings()
 	if err != nil {
+		logGameError("load game settings", err)
 		common.ApiErrorT(c, "Unable to load game settings")
 		return
 	}
@@ -100,11 +120,13 @@ func GetGameRewards(c *gin.Context) {
 	now := time.Now()
 	settings, err := model.GetGameSettings()
 	if err != nil {
+		logGameError("load game settings", err)
 		common.ApiErrorT(c, "Unable to load game rewards")
 		return
 	}
 	budgets, err := model.GetGameBudgets(settings, now)
 	if err != nil {
+		logGameError("load game budgets", err)
 		common.ApiErrorT(c, "Unable to load game rewards")
 		return
 	}

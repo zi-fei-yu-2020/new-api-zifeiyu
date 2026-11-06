@@ -2,7 +2,9 @@ package tokengame
 
 import "math"
 
-const DuelVersion = 1
+// Version 2 draws random numbers from the high bits of the LCG and resolves
+// token pickups symmetrically; version 1 matches keep the original behavior.
+const DuelVersion = 2
 const DuelDuration = 900
 
 type DuelBeamTarget struct {
@@ -61,7 +63,13 @@ type DuelState struct {
 }
 
 func NewDuel(seed uint32) DuelState {
-	state := DuelState{Version: DuelVersion, RNG: seed, Enemies: []DuelEnemy{}, Tokens: []DuelToken{}}
+	return NewDuelVersion(seed, DuelVersion)
+}
+
+// NewDuelVersion starts a duel under a specific simulation version, so a stored
+// match can be rebuilt from its seed with the rules it was created under.
+func NewDuelVersion(seed uint32, version int) DuelState {
+	state := DuelState{Version: version, RNG: seed, Enemies: []DuelEnemy{}, Tokens: []DuelToken{}}
 	for slot := range state.Players {
 		state.Players[slot].HP = 100
 		state.Players[slot].MaxHP = 100
@@ -75,6 +83,10 @@ func NewDuel(seed uint32) DuelState {
 
 func (s *DuelState) random(n int) int {
 	s.RNG = s.RNG*1664525 + 1013904223
+	if s.Version >= 2 {
+		// The low bits of a power-of-two LCG have tiny periods; scale the high bits.
+		return int(uint64(s.RNG) * uint64(n) >> 32)
+	}
 	return int(uint64(s.RNG) % uint64(n))
 }
 
@@ -268,9 +280,39 @@ func (s *DuelState) duelReapEnemies() {
 	s.Enemies = enemies
 }
 
-// Player one resolves first, so a token both players can reach in the same
-// tick goes to player one; magnets pull toward whichever player judges it.
+// Version 1: player one resolves first, so a token both players can reach in
+// the same tick goes to player one; magnets pull toward whichever player judges
+// it. Version 2 judges every token against the nearest player only, with exact
+// ties alternating by tick, so the result no longer depends on slot order.
 func (s *DuelState) duelCollectTokens() {
+	if s.Version >= 2 {
+		tokens := s.Tokens[:0]
+		for _, token := range s.Tokens {
+			var dist2 [2]int
+			for i := range s.Players {
+				dx, dy := s.Players[i].X-token.X, s.Players[i].Y-token.Y
+				dist2[i] = dx*dx + dy*dy
+			}
+			nearest := 0
+			if dist2[1] < dist2[0] || (dist2[1] == dist2[0] && s.Tick%2 == 1) {
+				nearest = 1
+			}
+			player := &s.Players[nearest]
+			dist := int(math.Sqrt(float64(dist2[nearest])))
+			if dist < 450 {
+				player.Collected += token.Value
+				player.Score += token.Value * 3
+				continue
+			}
+			if dist < 1400 {
+				token.X += (player.X - token.X) * 220 / dist
+				token.Y += (player.Y - token.Y) * 220 / dist
+			}
+			tokens = append(tokens, token)
+		}
+		s.Tokens = tokens
+		return
+	}
 	for i := range s.Players {
 		player := &s.Players[i]
 		tokens := s.Tokens[:0]

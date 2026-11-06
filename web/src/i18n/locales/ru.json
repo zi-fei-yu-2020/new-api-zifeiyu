@@ -8029,6 +8029,7 @@
     "PvP duels": "PvP-дуэли",
     "PvP duels are currently disabled": "PvP-дуэли сейчас отключены",
     "PvP input rejected. Refresh the duel and retry": "PvP-ввод отклонён. Обновите дуэль и повторите",
+    "PvP invite code has expired": "Срок действия кода приглашения PvP истёк",
     "PvP match history": "История PvP-дуэлей",
     "PvP match not found": "PvP-матч не найден",
     "PvP replay is only available after the duel finishes": "Повтор PvP доступен только после окончания дуэли",
@@ -8066,6 +8067,14 @@
     "Your score": "Ваш счёт",
     "duels": "дуэлей",
     "vs {{name}} (red)": "против {{name}} (красный)",
-    "{{name}} (blue)": "{{name}} (синий)"
+    "{{name}} (blue)": "{{name}} (синий)",
+    "Deleted account": "Удалённый аккаунт",
+    "PvP stake locked: {{quota}}": "Ставка PvP заблокирована: {{quota}}",
+    "Unable to cancel the friendly duel": "Не удалось отменить дружеский поединок",
+    "Unable to refresh PvP status. Showing the last known data.": "Не удалось обновить статус PvP. Показаны последние известные данные.",
+    "Cancel invite": "Отменить приглашение",
+    "Invite cancelled": "Приглашение отменено",
+    "Get ready. The duel starts in {{seconds}}s": "Приготовьтесь. Поединок начнётся через {{seconds}} с",
+    "A capped daily budget must cover at least the maximum reward for one run": "Ограниченный дневной бюджет должен покрывать как минимум максимальную награду за один забег"
   }
 }

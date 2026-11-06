@@ -8029,6 +8029,7 @@
     "PvP duels": "Duels PvP",
     "PvP duels are currently disabled": "Les duels PvP sont actuellement désactivés",
     "PvP input rejected. Refresh the duel and retry": "Entrée PvP refusée. Actualisez le duel et réessayez",
+    "PvP invite code has expired": "Le code d’invitation PvP a expiré",
     "PvP match history": "Historique des duels PvP",
     "PvP match not found": "Duel PvP introuvable",
     "PvP replay is only available after the duel finishes": "La rediffusion PvP est disponible uniquement après la fin du duel",
@@ -8066,6 +8067,14 @@
     "Your score": "Votre score",
     "duels": "duels",
     "vs {{name}} (red)": "contre {{name}} (rouge)",
-    "{{name}} (blue)": "{{name}} (bleu)"
+    "{{name}} (blue)": "{{name}} (bleu)",
+    "Deleted account": "Compte supprimé",
+    "PvP stake locked: {{quota}}": "Mise PvP bloquée : {{quota}}",
+    "Unable to cancel the friendly duel": "Impossible d’annuler le duel amical",
+    "Unable to refresh PvP status. Showing the last known data.": "Impossible d’actualiser l’état PvP. Dernières données connues affichées.",
+    "Cancel invite": "Annuler l’invitation",
+    "Invite cancelled": "Invitation annulée",
+    "Get ready. The duel starts in {{seconds}}s": "Préparez-vous. Le duel commence dans {{seconds}} s",
+    "A capped daily budget must cover at least the maximum reward for one run": "Un budget quotidien plafonné doit couvrir au moins la récompense maximale d’une partie"
   }
 }

@@ -58,11 +58,17 @@ export function useGameSession(onFinish: () => void) {
   const install = useCallback(
     (next: GameRun | null) => {
       cancelSynchronization()
+      // A resignation must survive the recovery that re-installs the same
+      // run, otherwise the quit batch is never sent.
+      const preserveQuit =
+        quitRequested.current &&
+        next?.status === 'running' &&
+        next.id === session.current?.id
       if (next?.id !== session.current?.id || next?.status !== 'running') {
         input.current = { direction: 0, dash: false, upgrade: 0 }
       }
       session.current = next
-      quitRequested.current = false
+      quitRequested.current = preserveQuit
       recoveryRequested.current = false
       state.current = next ? structuredClone(next.state) : newGame(42)
       pending.current = []
@@ -91,11 +97,7 @@ export function useGameSession(onFinish: () => void) {
     const task = Promise.resolve()
       .then(async () => {
         try {
-          if (
-            recoveryRequested.current &&
-            pending.current.length === 0 &&
-            !quitRequested.current
-          ) {
+          if (recoveryRequested.current && pending.current.length === 0) {
             const data = await getGameStatus(controller.signal)
             if (generation.current !== version || controller.signal.aborted) {
               return
@@ -229,7 +231,12 @@ export function useGameSession(onFinish: () => void) {
     quitRequested.current = true
     input.current = { direction: 0, dash: false, upgrade: 0 }
     if (inFlight.current) await inFlight.current
-    await synchronize()
+    // A recovery round only refreshes the run, so the quit batch itself goes
+    // out on a following round.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await synchronize()
+      if (session.current?.status !== 'running') return
+    }
   }
 
   return { run, display, state, input, connection, install, quit }
