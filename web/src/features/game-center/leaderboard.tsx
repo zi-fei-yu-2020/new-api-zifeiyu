@@ -25,14 +25,23 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatNumber, formatQuota } from '@/lib/format'
 
-import { getRankings } from './api'
+import { getRankings, type Rank } from './api'
 
-export function Leaderboard(props: { weeklyPrizes: number[] }) {
+export function Leaderboard(props: {
+  weeklyPrizes: number[]
+  queryKey?: string
+  fetchRankings?: (period: 'day' | 'week') => Promise<Rank[]>
+  dayHint?: string
+  weekHint?: string
+  // Subtracted from the level shown on the daily board, whose levels start
+  // above 1 in the engine but are numbered from 1 in the panel.
+  dayLevelOffset?: number
+}) {
   const { t } = useTranslation()
   const [period, setPeriod] = useState<'day' | 'week'>('day')
   const ranks = useQuery({
-    queryKey: ['game-rankings', period],
-    queryFn: () => getRankings(period),
+    queryKey: [props.queryKey ?? 'game-rankings', period],
+    queryFn: () => (props.fetchRankings ?? getRankings)(period),
     refetchInterval: 30000,
     meta: { errorToast: false },
   })
@@ -82,6 +91,13 @@ export function Leaderboard(props: { weeklyPrizes: number[] }) {
                 <span className='text-muted-foreground ml-1'>({t('You')})</span>
               )}
             </span>
+            {row.level !== undefined && (
+              <span className='text-muted-foreground shrink-0 font-mono text-xs'>
+                {t('Level')}{' '}
+                {row.level -
+                  (period === 'day' ? (props.dayLevelOffset ?? 0) : 0)}
+              </span>
+            )}
             <div className='shrink-0 text-right'>
               <span className='font-mono text-sm tabular-nums'>
                 {formatNumber(row.score)}
@@ -124,8 +140,8 @@ export function Leaderboard(props: { weeklyPrizes: number[] }) {
       </Tabs>
       <p className='text-muted-foreground px-5 pt-3 pb-2 text-[11px]'>
         {period === 'day'
-          ? t('One attempt. Highest score wins.')
-          : t('Total score from this week’s daily runs.')}
+          ? (props.dayHint ?? t('One attempt. Highest score wins.'))
+          : (props.weekHint ?? t('Total score from this week’s daily runs.'))}
       </p>
       <div className='max-h-[355px] overflow-y-auto px-5'>{content}</div>
       <div className='bg-muted/20 mt-2 flex justify-between border-t px-5 py-3 text-xs'>

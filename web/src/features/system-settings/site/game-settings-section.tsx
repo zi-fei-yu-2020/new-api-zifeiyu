@@ -72,6 +72,11 @@ const schema = z
     pvpEnabled: z.boolean(),
     pvpMin: amountSchema,
     pvpMax: amountSchema,
+    match3Enabled: z.boolean(),
+    match3RewardsEnabled: z.boolean(),
+    match3First: amountSchema,
+    match3Second: amountSchema,
+    match3Third: amountSchema,
   })
   .refine(
     (values) =>
@@ -135,6 +140,13 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
       pvpEnabled: settings.pvp_enabled ?? true,
       pvpMin: quotaUnitsToDollars(settings.pvp_min_stake ?? 0),
       pvpMax: quotaUnitsToDollars(settings.pvp_max_stake ?? 0),
+      match3Enabled: settings.match3_enabled ?? true,
+      match3RewardsEnabled: settings.match3_rewards_enabled ?? false,
+      match3First: quotaUnitsToDollars(settings.match3_weekly_first_quota ?? 0),
+      match3Second: quotaUnitsToDollars(
+        settings.match3_weekly_second_quota ?? 0
+      ),
+      match3Third: quotaUnitsToDollars(settings.match3_weekly_third_quota ?? 0),
     }),
     [settings]
   )
@@ -154,6 +166,10 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
     parseQuotaFromDollars(Number(form.watch('weeklyFirst'))) +
     parseQuotaFromDollars(Number(form.watch('weeklySecond'))) +
     parseQuotaFromDollars(Number(form.watch('weeklyThird')))
+  const match3Total =
+    parseQuotaFromDollars(Number(form.watch('match3First'))) +
+    parseQuotaFromDollars(Number(form.watch('match3Second'))) +
+    parseQuotaFromDollars(Number(form.watch('match3Third')))
   async function submit(values: Values) {
     setSaving(true)
     try {
@@ -177,6 +193,11 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
         pvp_enabled: values.pvpEnabled,
         pvp_min_stake: parseQuotaFromDollars(values.pvpMin),
         pvp_max_stake: parseQuotaFromDollars(values.pvpMax),
+        match3_enabled: values.match3Enabled,
+        match3_rewards_enabled: values.match3RewardsEnabled,
+        match3_weekly_first_quota: parseQuotaFromDollars(values.match3First),
+        match3_weekly_second_quota: parseQuotaFromDollars(values.match3Second),
+        match3_weekly_third_quota: parseQuotaFromDollars(values.match3Third),
       })
       form.reset(values)
       toast.success(t('Saved successfully'))
@@ -188,6 +209,8 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
         client.invalidateQueries({ queryKey: ['game-settings'] }),
         client.invalidateQueries({ queryKey: ['game-rewards'] }),
         client.invalidateQueries({ queryKey: ['game-status'] }),
+        client.invalidateQueries({ queryKey: ['match3-status'] }),
+        client.invalidateQueries({ queryKey: ['match3-rankings'] }),
         client.invalidateQueries({ queryKey: ['status'] }),
         client.invalidateQueries({ queryKey: ['system-options'] }),
       ])
@@ -402,6 +425,80 @@ function GameSettingsForm({ settings }: { settings: GameSettings }) {
                 </FieldDescription>
               </Field>
             </div>
+          </div>
+          <div className='space-y-4 border-t pt-5'>
+            <div>
+              <h3 className='text-sm font-semibold'>{t('Tile Match')}</h3>
+              <FieldDescription>
+                {t(
+                  'Only the ranked endless weekly board pays rewards. Daily and practice runs never pay.'
+                )}
+              </FieldDescription>
+            </div>
+            <SettingsSwitchField
+              controlId='game-match3'
+              label={t('Enable Tile Match')}
+              checked={form.watch('match3Enabled')}
+              onCheckedChange={(v) =>
+                form.setValue('match3Enabled', v, { shouldDirty: true })
+              }
+              description={t(
+                'Turning off Tile Match stops new runs. Runs already in progress can finish.'
+              )}
+            />
+            <SettingsSwitchField
+              controlId='game-match3-rewards'
+              label={t('Enable Tile Match weekly rewards')}
+              checked={form.watch('match3RewardsEnabled')}
+              onCheckedChange={(v) =>
+                form.setValue('match3RewardsEnabled', v, { shouldDirty: true })
+              }
+              description={t(
+                'Turn on to activate weekly prizes. Turning them off does not cancel an already activated week.'
+              )}
+            />
+            <div className='grid gap-5 sm:grid-cols-3'>
+              <Field>
+                <FieldLabel htmlFor='game-match3-first'>
+                  {t('Tile Match first-place reward')} ({getCurrencyLabel()})
+                </FieldLabel>
+                <Input
+                  id='game-match3-first'
+                  type='number'
+                  min={0}
+                  step={getEditableQuotaStep()}
+                  {...form.register('match3First')}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor='game-match3-second'>
+                  {t('Tile Match second-place reward')} ({getCurrencyLabel()})
+                </FieldLabel>
+                <Input
+                  id='game-match3-second'
+                  type='number'
+                  min={0}
+                  step={getEditableQuotaStep()}
+                  {...form.register('match3Second')}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor='game-match3-third'>
+                  {t('Tile Match third-place reward')} ({getCurrencyLabel()})
+                </FieldLabel>
+                <Input
+                  id='game-match3-third'
+                  type='number'
+                  min={0}
+                  step={getEditableQuotaStep()}
+                  {...form.register('match3Third')}
+                />
+              </Field>
+            </div>
+            <p className='text-sm'>
+              {t('Total weekly podium rewards')}:{' '}
+              <strong>{formatQuota(match3Total)}</strong>
+            </p>
           </div>
           {Object.keys(form.formState.errors).length > 0 && (
             <p role='alert' className='text-destructive text-sm'>

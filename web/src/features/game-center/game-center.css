@@ -28,3 +28,92 @@
     display: flex;
   }
 }
+
+/* Match3 (stacked tiles). Tile positions come from the engine grid: x spans
+   0..14 and y spans 0..10 in half-tile steps, and a tile is two cells wide. */
+.match3-board {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 12;
+  background: var(--game-floor);
+  touch-action: manipulation;
+}
+.match3-tile {
+  position: absolute;
+  left: calc(var(--m3-x) * 100% / 16);
+  top: calc(var(--m3-y) * 100% / 12);
+  width: calc(2 * 100% / 16);
+  height: calc(2 * 100% / 12);
+  z-index: var(--m3-z);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow:
+    1px 2px 0 color-mix(in oklab, var(--foreground) 22%, transparent),
+    0 0 0 1px var(--background) inset;
+  transform: translate(calc(var(--m3-z) * -3px), calc(var(--m3-z) * -3px));
+  transition:
+    transform 120ms ease,
+    filter 120ms ease;
+}
+.match3-tile:not([aria-disabled='true']):hover {
+  transform: translate(
+    calc(var(--m3-z) * -3px),
+    calc(var(--m3-z) * -3px - 2px)
+  );
+}
+.match3-tile[aria-disabled='true'] {
+  cursor: not-allowed;
+  filter: brightness(0.78) saturate(0.6);
+}
+.match3-tile:focus-visible {
+  outline: 3px solid var(--foreground);
+  outline-offset: 1px;
+}
+.match3-tile[data-hint='true'] {
+  outline: 2px dashed var(--foreground);
+  outline-offset: 2px;
+  animation: match3-hint 900ms ease-in-out infinite alternate;
+}
+@keyframes match3-hint {
+  to {
+    transform: translate(
+      calc(var(--m3-z) * -3px),
+      calc(var(--m3-z) * -3px - 3px)
+    );
+  }
+}
+.match3-tray {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.match3-slot {
+  display: flex;
+  aspect-ratio: 1;
+  align-items: center;
+  justify-content: center;
+  background: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+}
+.match3-slot[data-filled='true'] {
+  background: var(--card);
+  border: 1px solid var(--foreground);
+}
+.match3-tray.is-full .match3-slot[data-filled='true'] {
+  border-width: 2px;
+}
+[data-low-motion='true'] .match3-tile,
+[data-low-motion='true'] .match3-tile:hover,
+[data-low-motion='true'] .match3-tile[data-hint='true'] {
+  animation: none;
+  transition: none;
+}

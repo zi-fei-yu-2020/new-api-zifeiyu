@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { GameCenter } from '@/features/game-center'
+import { match3StatusQueryOptions } from '@/features/game-center/match3/query-options'
 import {
   gameStatusQueryOptions,
   pvpStatusQueryOptions,
@@ -49,6 +50,21 @@ export const Route = createFileRoute('/games/')({
         if (
           pvp.match?.status === 'playing' ||
           pvp.match?.status === 'invited'
+        ) {
+          return
+        }
+      } catch {
+        return
+      }
+      // A tile run in progress must stay reachable so it can be finished or
+      // resigned; a failed lookup keeps the page for its error state.
+      try {
+        const match3 = await context.queryClient.fetchQuery(
+          match3StatusQueryOptions
+        )
+        if (
+          match3.daily_run?.status === 'running' ||
+          match3.endless_run?.status === 'running'
         ) {
           return
         }
